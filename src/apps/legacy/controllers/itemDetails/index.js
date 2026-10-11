@@ -194,8 +194,81 @@ function renderSeriesTimerEditor(page, item, apiClient, user) {
     hideAll(page, 'btnCancelSeriesTimer');
 }
 
+// Gelato answers a page of a title whose streams are still being fetched (5-12 s for one nobody
+// opened) with placeholder sources instead of making the page wait: the picker shows it is
+// loading and the item is asked for again until the versions are there.
+const PENDING_VERSIONS_POLL_MS = 1000;
+const PENDING_VERSIONS_LIMIT_MS = 30000;
+
+function hasPendingVersions(item) {
+    return !!item.MediaSources?.length && item.MediaSources.every(m => m.Type === 'Placeholder');
+}
+
+function cancelVersionsPoll(instance) {
+    if (instance._versionsPoll) {
+        instance._versionsPoll.cancelled = true;
+        instance._versionsPoll = null;
+    }
+}
+
+function waitForVersions(instance, item) {
+    if (instance._versionsPoll?.itemId === item.Id) {
+        return;
+    }
+
+    cancelVersionsPoll(instance);
+    const poll = { itemId: item.Id, cancelled: false, started: Date.now() };
+    instance._versionsPoll = poll;
+    const apiClient = ServerConnections.getApiClient(item.ServerId);
+
+    const tick = () => {
+        if (poll.cancelled) {
+            return;
+        }
+
+        apiClient.getItem(apiClient.getCurrentUserId(), item.Id).then(fresh => {
+            if (poll.cancelled) {
+                return;
+            }
+
+            if (hasPendingVersions(fresh) && Date.now() - poll.started < PENDING_VERSIONS_LIMIT_MS) {
+                setTimeout(tick, PENDING_VERSIONS_POLL_MS);
+                return;
+            }
+
+            instance._versionsPoll = null;
+            instance._onVersionsReady?.(fresh);
+        }).catch(err => {
+            console.warn('[ItemDetails] could not check for the versions', err);
+            if (!poll.cancelled && Date.now() - poll.started < PENDING_VERSIONS_LIMIT_MS) {
+                setTimeout(tick, PENDING_VERSIONS_POLL_MS * 2);
+            }
+        });
+    };
+
+    setTimeout(tick, PENDING_VERSIONS_POLL_MS);
+}
+
 function renderTrackSelections(page, instance, item, forceReload) {
     const select = page.querySelector('.selectSource');
+    const sourceContainer = page.querySelector('.selectSourceContainer');
+
+    if (item.MediaSources && hasPendingVersions(item) && itemHelper.supportsMediaSourceSelection(item)) {
+        page.querySelector('.trackSelections').classList.remove('hide');
+        select.setLabel(globalize.translate('LabelVersion'));
+        select.innerHTML = '<option value="">' + escapeHtml(globalize.translate('LoadingVersions')) + '</option>';
+        select.disabled = true;
+        sourceContainer.classList.remove('hide');
+        sourceContainer.classList.add('selectSourceLoading');
+        page.querySelector('.selectVideo').innerHTML = '';
+        page.querySelector('.selectAudio').innerHTML = '';
+        page.querySelector('.selectSubtitles').innerHTML = '';
+        waitForVersions(instance, item);
+        return;
+    }
+
+    select.disabled = false;
+    sourceContainer.classList.remove('selectSourceLoading');
 
     if (!item.MediaSources || !itemHelper.supportsMediaSourceSelection(item) || playbackManager.getSupportedCommands().indexOf('PlayMediaSource') === -1 || !playbackManager.canPlay(item)) {
         page.querySelector('.trackSelections').classList.add('hide');
@@ -2107,6 +2180,16 @@ export default function (view, params) {
     let currentItem;
     const self = this;
 
+    // The versions Gelato was still fetching when the page loaded have arrived.
+    self._onVersionsReady = function (freshItem) {
+        if (!currentItem || currentItem.Id !== freshItem.Id) {
+            return;
+        }
+        currentItem = freshItem;
+        renderTrackSelections(view, self, freshItem, true);
+        reloadPlayButtons(view, freshItem);
+    };
+
     function init() {
         const apiClient = getApiClient();
 
@@ -2156,6 +2239,7 @@ export default function (view, params) {
             itemShortcuts.on(view.querySelector('.nameContainer'));
         });
         view.addEventListener('viewbeforehide', function () {
+            cancelVersionsPoll(self);
             itemShortcuts.off(view.querySelector('.nameContainer'));
             self._unsubscribeUserData?.();
             self._unsubscribeUserData = null;
@@ -2163,6 +2247,7 @@ export default function (view, params) {
             libraryMenu.setTransparentMenu(false);
         });
         view.addEventListener('viewdestroy', function () {
+            cancelVersionsPoll(self);
             unmount(self);
 
             currentItem = null;

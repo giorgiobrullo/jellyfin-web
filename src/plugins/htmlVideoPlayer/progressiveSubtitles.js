@@ -1,11 +1,12 @@
 /**
- * Streams an embedded ASS/SSA track of a remote source while the server reads it.
+ * Streams an embedded text subtitle track while the server reads it.
  *
  * The events of a Matroska text track are spread over the whole file, so a full extraction of a
  * remote source has to download all of it before the server returns a single line (40-60 s for a
  * 2-3 GB episode). The server's progressive endpoint reads from the playback position and hands
- * out events as it finds them, far ahead of playback, so the renderer starts within seconds and
- * gets the growing track every few seconds until the server reaches the end of the file.
+ * out events as it finds them, far ahead of playback, as ASS event lines (text tracks such as SRT
+ * are converted on the way); the renderer starts with the first ones and takes the rest as they
+ * come.
  *
  * Event times are absolute, so the events of every read are kept: seeking back and forth (by hand
  * or through SyncPlay) only ever adds to what the renderer has. A seek before the start of the
@@ -17,20 +18,22 @@ const TICKS_PER_SECOND = 10000000;
 const FIRST_WAIT_MS = 6000;
 const POLL_WAIT_MS = 3000;
 const RETRY_DELAY_MS = 2000;
-// setTrack() re-parses the track and drops the renderer's pre-rendered frames: not on every batch.
-const UPDATE_INTERVAL_MS = 3000;
 // Start a little before the position, for the line already on screen.
 const START_MARGIN_TICKS = 5 * TICKS_PER_SECOND;
 // A seek this far past what the current read has reached starts a new read from there.
 const SEEK_AHEAD_TICKS = 30 * TICKS_PER_SECOND;
 
+const ASS_CODECS = ['ass', 'ssa'];
+// Text tracks the server converts to ASS events on the way.
+const TEXT_CODECS = ['subrip', 'srt', 'webvtt', 'vtt', 'mov_text'];
+
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
 /**
- * Whether a subtitle track is streamed progressively rather than fetched whole.
+ * Whether an embedded subtitle track is streamed progressively rather than fetched whole.
  * @param {object} track The subtitle MediaStream.
  * @param {object} mediaSource The media source being played.
- * @returns {boolean} Whether to use {@link ProgressiveAssTrack}.
+ * @returns {boolean} Whether to use {@link ProgressiveSubtitleTrack}.
  */
 export function canStreamProgressively(track, mediaSource) {
     const codec = (track?.Codec || '').toLowerCase();
@@ -39,25 +42,67 @@ export function canStreamProgressively(track, mediaSource) {
     // the server's disk the progressive read is just quicker to show the first lines.
     return track?.DeliveryMethod === 'External'
         && !track.IsExternal
-        && (codec === 'ass' || codec === 'ssa')
+        && (ASS_CODECS.includes(codec) || TEXT_CODECS.includes(codec))
         && !!mediaSource;
 }
 
-export class ProgressiveAssTrack {
+function parseAssTime(value) {
+    const parts = value.trim().split(':');
+    if (parts.length !== 3) {
+        return NaN;
+    }
+    return (Number(parts[0]) * 3600) + (Number(parts[1]) * 60) + Number(parts[2]);
+}
+
+/**
+ * Turns an ASS event line into the TrackEvent the text renderers take.
+ * @param {string} line A `Dialogue:` line (Layer,Start,End,Style,Name,MarginL,MarginR,MarginV,Effect,Text).
+ * @returns {{StartPositionTicks: number, EndPositionTicks: number, Text: string} | null} The event.
+ */
+export function assLineToTrackEvent(line) {
+    if (!line.startsWith('Dialogue:')) {
+        return null;
+    }
+
+    const fields = line.slice('Dialogue:'.length).split(',');
+    if (fields.length < 10) {
+        return null;
+    }
+
+    const start = parseAssTime(fields[1]);
+    const end = parseAssTime(fields[2]);
+    if (Number.isNaN(start) || Number.isNaN(end)) {
+        return null;
+    }
+
+    // The text may hold commas. Italics, bold and underline from the converted SRT become the
+    // tags the renderers show; the remaining override tags are dropped by them.
+    const text = fields.slice(9).join(',')
+        .replace(/{\\i1}/g, '<i>').replace(/{\\i0?}/g, '</i>')
+        .replace(/{\\b1}/g, '<b>').replace(/{\\b0?}/g, '</b>')
+        .replace(/{\\u1}/g, '<u>').replace(/{\\u0?}/g, '</u>');
+
+    return {
+        StartPositionTicks: Math.round(start * TICKS_PER_SECOND),
+        EndPositionTicks: Math.round(end * TICKS_PER_SECOND),
+        Text: text
+    };
+}
+
+export class ProgressiveSubtitleTrack {
     #apiClient;
     #itemId;
     #mediaSourceId;
     #index;
-    #fullTrackUrl;
     #videoElement;
     #getPositionTicks;
-    #renderer = null;
+    #onEvents;
+    #onComplete;
     #onSeeked = null;
 
     #header = '';
-    #events = [];
     #seen = new Set();
-    #fullTrackLoaded = false;
+    #wholeTrack = false;
 
     // The read being followed.
     #session = null;
@@ -67,8 +112,7 @@ export class ProgressiveAssTrack {
     #coveredTicks = 0;
     #generation = 0;
 
-    #dirty = false;
-    #lastUpdate = 0;
+    #attached = false;
     #disposed = false;
 
     /**
@@ -77,24 +121,33 @@ export class ProgressiveAssTrack {
      * @param {string} options.itemId The item id.
      * @param {string} options.mediaSourceId The media source id.
      * @param {number} options.index The subtitle stream index.
-     * @param {string} options.fullTrackUrl The regular URL of the whole track.
      * @param {HTMLVideoElement} options.videoElement The video element.
      * @param {() => number} options.getPositionTicks The current playback position in ticks.
+     * @param {(lines: string[], header: string) => void} options.onEvents Gets the event lines not
+     *     seen before, as they arrive, with the script header.
+     * @param {(startTicks: number) => void} [options.onComplete] Called once a read reaches the end of
+     *     the file, with where it began: one that began mid-file misses the earlier lines.
      */
-    constructor({ apiClient, itemId, mediaSourceId, index, fullTrackUrl, videoElement, getPositionTicks }) {
+    constructor({ apiClient, itemId, mediaSourceId, index, videoElement, getPositionTicks, onEvents, onComplete }) {
         this.#apiClient = apiClient;
         this.#itemId = itemId;
         this.#mediaSourceId = mediaSourceId;
         this.#index = index;
-        this.#fullTrackUrl = fullTrackUrl;
         this.#videoElement = videoElement;
         this.#getPositionTicks = getPositionTicks;
+        this.#onEvents = onEvents;
+        this.#onComplete = onComplete;
+    }
+
+    get header() {
+        return this.#header;
     }
 
     /**
      * Starts reading at a position.
      * @param {number} positionTicks The playback position.
-     * @returns {Promise<string|null>} The first content for the renderer, or null to use the regular track.
+     * @returns {Promise<{header: string, lines: string[]}|null>} The first events, or null to use the
+     *     regular track.
      */
     async start(positionTicks) {
         const reply = await this.#request(Math.max(0, positionTicks - START_MARGIN_TICKS), null, 0, FIRST_WAIT_MS);
@@ -102,25 +155,26 @@ export class ProgressiveAssTrack {
             return null;
         }
 
-        this.#follow(reply);
-        this.#dirty = false;
-        return this.#content();
+        const lines = this.#follow(reply);
+        return { header: this.#header, lines };
     }
 
-    /**
-     * Hands the renderer over: from now on it gets the track as it grows.
-     * @param {object} renderer The SubtitlesOctopus instance.
-     */
-    attach(renderer) {
-        if (this.#disposed) {
+    /** Starts following the read: new events go to `onEvents` from now on. */
+    attach() {
+        if (this.#disposed || this.#attached) {
             return;
         }
 
-        this.#renderer = renderer;
-        this.#lastUpdate = Date.now();
+        this.#attached = true;
         this.#onSeeked = () => this.#handleSeek();
         this.#videoElement.addEventListener('seeked', this.#onSeeked);
         this.#poll(this.#generation);
+    }
+
+    /** The renderer has the whole track now (fetched the regular way): no more reads. */
+    markWholeTrack() {
+        this.#wholeTrack = true;
+        this.#generation++;
     }
 
     dispose() {
@@ -130,7 +184,6 @@ export class ProgressiveAssTrack {
             this.#videoElement.removeEventListener('seeked', this.#onSeeked);
             this.#onSeeked = null;
         }
-        this.#renderer = null;
     }
 
     #request(startTicks, session, since, waitMs) {
@@ -145,12 +198,12 @@ export class ProgressiveAssTrack {
 
         const url = this.#apiClient.getUrl(`Videos/${this.#itemId}/${this.#mediaSourceId}/Subtitles/${this.#index}/Progressive`, params);
         return this.#apiClient.getJSON(url).catch(err => {
-            console.warn('[ProgressiveAss] request failed', err);
+            console.warn('[ProgressiveSubtitles] request failed', err);
             return null;
         });
     }
 
-    /** Follows a new read, keeping the events of the previous ones. */
+    /** Follows a new read, keeping the events of the previous ones; returns its new lines. */
     #follow(reply) {
         this.#session = reply.Session;
         this.#startTicks = reply.StartPositionTicks;
@@ -160,35 +213,24 @@ export class ProgressiveAssTrack {
         if (reply.Header) {
             this.#header = reply.Header;
         }
-        this.#add(reply.Events);
+        return this.#unseen(reply.Events);
     }
 
-    #add(events) {
+    #unseen(events) {
+        const fresh = [];
         for (const line of events) {
             if (!this.#seen.has(line)) {
                 this.#seen.add(line);
-                this.#events.push(line);
-                this.#dirty = true;
+                fresh.push(line);
             }
         }
+        return fresh;
     }
 
-    #content() {
-        return this.#header + this.#events.join('\n') + '\n';
-    }
-
-    #update(force) {
-        if (!this.#renderer || !this.#dirty || this.#fullTrackLoaded) {
-            return;
+    #deliver(lines) {
+        if (lines.length && !this.#disposed && !this.#wholeTrack) {
+            this.#onEvents(lines, this.#header);
         }
-
-        if (!force && Date.now() - this.#lastUpdate < UPDATE_INTERVAL_MS) {
-            return;
-        }
-
-        this.#renderer.setTrack(this.#content());
-        this.#dirty = false;
-        this.#lastUpdate = Date.now();
     }
 
     async #poll(generation) {
@@ -211,44 +253,24 @@ export class ProgressiveAssTrack {
                     return;
                 }
                 if (fresh && !fresh.Failed) {
-                    this.#follow(fresh);
+                    this.#deliver(this.#follow(fresh));
                 }
-                this.#update(false);
                 continue;
             }
 
-            this.#add(reply.Events);
             this.#next = reply.Next;
             this.#coveredTicks = reply.CoveredTicks;
             this.#complete = reply.Complete || reply.Failed;
-            this.#update(this.#complete);
+            this.#deliver(this.#unseen(reply.Events));
         }
 
-        if (!this.#disposed && generation === this.#generation && this.#complete && this.#startTicks > 0) {
-            // The read began after the start of the file: the regular track has the earlier lines.
-            this.#loadFullTrack(generation);
-        }
-    }
-
-    async #loadFullTrack(generation) {
-        try {
-            const response = await fetch(this.#fullTrackUrl);
-            if (!response.ok) {
-                return;
-            }
-            const text = await response.text();
-            if (this.#disposed || generation !== this.#generation || !this.#renderer) {
-                return;
-            }
-            this.#renderer.setTrack(text);
-            this.#fullTrackLoaded = true;
-        } catch (err) {
-            console.warn('[ProgressiveAss] could not load the whole track', err);
+        if (!this.#disposed && generation === this.#generation && this.#complete) {
+            this.#onComplete?.(this.#startTicks);
         }
     }
 
     #handleSeek() {
-        if (this.#disposed || this.#fullTrackLoaded) {
+        if (this.#disposed || this.#wholeTrack) {
             return;
         }
 
@@ -267,8 +289,7 @@ export class ProgressiveAssTrack {
             return;
         }
 
-        this.#follow(reply);
-        this.#update(true);
+        this.#deliver(this.#follow(reply));
         this.#poll(generation);
     }
 }

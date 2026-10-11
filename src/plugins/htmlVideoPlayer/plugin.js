@@ -44,7 +44,7 @@ import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/ba
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
 import { isHls } from '../../utils/mediaSource.ts';
-import { canStreamProgressively, ProgressiveAssTrack } from './progressiveAss';
+import { assLineToTrackEvent, canStreamProgressively, ProgressiveSubtitleTrack } from './progressiveSubtitles';
 
 const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
@@ -168,6 +168,9 @@ function normalizeTrackEventText(text, useHtml) {
     return useHtml ? result.replace(/\n/gi, '<br>') : result;
 }
 
+// How often a progressively read ASS track is handed to the renderer while its events come in.
+const ASS_UPDATE_INTERVAL_MS = 3000;
+
 // A valid ASS track with no events, for a renderer set up before its real track arrives.
 const EMPTY_ASS_TRACK = '[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
 
@@ -279,9 +282,10 @@ export class HtmlVideoPlayer {
     #currentAssRenderer;
 
     /**
-     * @type {ProgressiveAssTrack | null | undefined}
+     * The progressive read of the primary subtitle track (see progressiveSubtitles.js).
+     * @type {ProgressiveSubtitleTrack | null | undefined}
      */
-    #progressiveAssTrack;
+    #progressiveTrack;
     /**
      * @type {any | null | undefined}
      */
@@ -1319,8 +1323,10 @@ export class HtmlVideoPlayer {
         this.destroyNativeTracks(videoElement, targetTrackIndex);
         this.destroyStoredTrackInfo(targetTrackIndex);
 
-        this.#progressiveAssTrack?.dispose();
-        this.#progressiveAssTrack = null;
+        if (targetTrackIndex === undefined || !this.isSecondaryTrack(targetTrackIndex)) {
+            this.#progressiveTrack?.dispose();
+            this.#progressiveTrack = null;
+        }
 
         const octopus = this.#currentAssRenderer;
         if (octopus) {
@@ -1402,6 +1408,85 @@ export class HtmlVideoPlayer {
     }
 
     /**
+     * Where the subtitles are needed from: the playback position, or where playback is about to
+     * resume when the video has not reached it yet.
+     * @private
+     */
+    #subtitleStartTicks(videoElement) {
+        return Math.max(
+            ((videoElement.currentTime || 0) * 10000000) + (this._currentPlayOptions.transcodingOffsetTicks || 0),
+            this._currentPlayOptions.playerStartPositionTicks || 0);
+    }
+
+    /**
+     * A progressive read of the primary subtitle track, replacing the previous one.
+     * @private
+     */
+    #newProgressiveTrack(videoElement, track, item, { onEvents, onComplete }) {
+        const mediaSource = this._currentPlayOptions.mediaSource;
+        this.#progressiveTrack?.dispose();
+        this.#progressiveTrack = new ProgressiveSubtitleTrack({
+            apiClient: ServerConnections.getApiClient(item),
+            itemId: item.Id,
+            mediaSourceId: mediaSource.Id,
+            index: track.Index,
+            videoElement,
+            getPositionTicks: () => ((videoElement.currentTime || 0) * 10000000) + (this._currentPlayOptions.transcodingOffsetTicks || 0),
+            onEvents,
+            onComplete
+        });
+        return this.#progressiveTrack;
+    }
+
+    /**
+     * The events of a text track (SRT and the like) for the text renderers: the first ones of a
+     * progressive read when the track can be streamed, the whole track otherwise.
+     * @private
+     * @returns {Promise<{data: {TrackEvents: object[]}, follow: ((onMore: (events: object[]) => void, onWhole: (events: object[]) => void) => void) | null}>}
+     */
+    async fetchTextTrackEvents(videoElement, track, item, targetTextTrackIndex) {
+        if (this.isSecondaryTrack(targetTextTrackIndex) || !canStreamProgressively(track, this._currentPlayOptions.mediaSource)) {
+            return { data: await this.fetchSubtitles(track, item), follow: null };
+        }
+
+        const sinks = { onMore: null, onWhole: null };
+        const progressive = this.#newProgressiveTrack(videoElement, track, item, {
+            onEvents: lines => sinks.onMore?.(lines.map(assLineToTrackEvent).filter(Boolean)),
+            onComplete: startTicks => {
+                if (startTicks <= 0) {
+                    return;
+                }
+                // The read began mid-file: the regular track has the earlier lines.
+                this.fetchSubtitles(track, item).then(whole => {
+                    if (this.#progressiveTrack === progressive && whole?.TrackEvents) {
+                        progressive.markWholeTrack();
+                        sinks.onWhole?.(whole.TrackEvents);
+                    }
+                }).catch(err => console.warn('[ProgressiveSubtitles] could not load the whole track', err));
+            }
+        });
+
+        const first = await progressive.start(this.#subtitleStartTicks(videoElement));
+        if (!first) {
+            // No progressive read here (older server, or it failed): the whole track.
+            progressive.dispose();
+            if (this.#progressiveTrack === progressive) {
+                this.#progressiveTrack = null;
+            }
+            return { data: await this.fetchSubtitles(track, item), follow: null };
+        }
+
+        return {
+            data: { TrackEvents: first.lines.map(assLineToTrackEvent).filter(Boolean) },
+            follow: (onMore, onWhole) => {
+                sinks.onMore = onMore;
+                sinks.onWhole = onWhole;
+                progressive.attach();
+            }
+        };
+    }
+
+    /**
      * @private
      */
     renderSsaAss(videoElement, track, item) {
@@ -1455,46 +1540,76 @@ export class HtmlVideoPlayer {
             };
 
             // An embedded track of a remote source would be downloaded whole before the first
-            // line shows: stream it from the playback position instead (see progressiveAss.js).
+            // line shows: stream it from the playback position instead (see progressiveSubtitles.js).
+            const fullTrackUrl = options.subUrl;
+            let renderer = null;
+            let assHeader = '';
+            const assLines = [];
+            let flushTimer = null;
+            let lastFlush = 0;
+            const flush = () => {
+                flushTimer = null;
+                if (renderer && this.#currentAssRenderer === renderer) {
+                    renderer.setTrack(assHeader + assLines.join('\n') + '\n');
+                    lastFlush = Date.now();
+                }
+            };
+            // setTrack() re-parses the track and drops the pre-rendered frames: once every few
+            // seconds while the events come in, not for every batch.
+            const scheduleFlush = force => {
+                if (force) {
+                    clearTimeout(flushTimer);
+                    flush();
+                } else if (!flushTimer) {
+                    flushTimer = setTimeout(flush, Math.max(0, ASS_UPDATE_INTERVAL_MS - (Date.now() - lastFlush)));
+                }
+            };
             const progressive = canStreamProgressively(track, mediaSource) ?
-                new ProgressiveAssTrack({
-                    apiClient,
-                    itemId: item.Id,
-                    mediaSourceId: mediaSource.Id,
-                    index: track.Index,
-                    fullTrackUrl: options.subUrl,
-                    videoElement,
-                    getPositionTicks: () => ((videoElement.currentTime || 0) * 10000000) + (this._currentPlayOptions.transcodingOffsetTicks || 0)
+                this.#newProgressiveTrack(videoElement, track, item, {
+                    onEvents: (lines, header) => {
+                        assHeader = header;
+                        assLines.push(...lines);
+                        scheduleFlush(false);
+                    },
+                    onComplete: startTicks => {
+                        scheduleFlush(true);
+                        if (startTicks > 0) {
+                            // The read began mid-file: the regular track has the earlier lines.
+                            fetch(fullTrackUrl).then(response => (response.ok ? response.text() : null)).then(text => {
+                                if (text && renderer && this.#currentAssRenderer === renderer && this.#progressiveTrack === progressive) {
+                                    clearTimeout(flushTimer);
+                                    renderer.setTrack(text);
+                                    progressive.markWholeTrack();
+                                }
+                            }).catch(err => console.warn('[ProgressiveSubtitles] could not load the whole track', err));
+                        }
+                    }
                 }) : null;
-            this.#progressiveAssTrack?.dispose();
-            this.#progressiveAssTrack = progressive;
-            const startTicks = Math.max(
-                ((videoElement.currentTime || 0) * 10000000) + (this._currentPlayOptions.transcodingOffsetTicks || 0),
-                this._currentPlayOptions.playerStartPositionTicks || 0);
 
             // The first events are requested right away and the renderer (worker, fonts) is set up
             // meanwhile on an empty track, instead of one after the other.
-            const progressiveStart = progressive ? progressive.start(startTicks) : null;
-            const fullTrackUrl = options.subUrl;
+            const progressiveStart = progressive ? progressive.start(this.#subtitleStartTicks(videoElement)) : null;
             if (progressive) {
                 options.subContent = EMPTY_ASS_TRACK;
                 delete options.subUrl;
             }
 
             const createRenderer = () => {
-                if (progressive && this.#progressiveAssTrack !== progressive) {
+                if (progressive && this.#progressiveTrack !== progressive) {
                     // The track was changed or playback stopped meanwhile.
                     return;
                 }
-                const renderer = new SubtitlesOctopus(options);
+                renderer = new SubtitlesOctopus(options);
                 this.#currentAssRenderer = renderer;
-                progressiveStart?.then(content => {
-                    if (this.#currentAssRenderer !== renderer || this.#progressiveAssTrack !== progressive) {
+                progressiveStart?.then(first => {
+                    if (this.#currentAssRenderer !== renderer || this.#progressiveTrack !== progressive) {
                         return;
                     }
-                    if (content) {
-                        renderer.setTrack(content);
-                        progressive.attach(renderer);
+                    if (first) {
+                        assHeader = first.header;
+                        assLines.push(...first.lines);
+                        scheduleFlush(true);
+                        progressive.attach();
                     } else {
                         // No progressive read here (older server, or it failed): the whole track.
                         renderer.setTrackByUrl(fullTrackUrl);
@@ -1610,7 +1725,7 @@ export class HtmlVideoPlayer {
      * @private
      */
     renderSubtitlesWithCustomElement(videoElement, track, item, targetTextTrackIndex) {
-        this.fetchSubtitles(track, item).then((subtitleData) => {
+        this.fetchTextTrackEvents(videoElement, track, item, targetTextTrackIndex).then(({ data: subtitleData, follow }) => {
             // Exit if the video element was destroyed while fetching subtitles
             if (!this.#mediaElement) return;
 
@@ -1630,6 +1745,11 @@ export class HtmlVideoPlayer {
                 this.setSubtitleAppearance(subtitlesContainer, this.#videoSubtitlesElem);
                 videoElement.parentNode.appendChild(subtitlesContainer);
                 this.#currentTrackEvents = subtitleData.TrackEvents;
+                follow?.(
+                    events => this.#currentTrackEvents?.push(...events),
+                    whole => {
+                        this.#currentTrackEvents = whole;
+                    });
             } else if (!this.#videoSecondarySubtitlesElem && this.isSecondaryTrack(targetTextTrackIndex)) {
                 const subtitlesContainer = document.querySelector('.videoSubtitles');
                 if (!subtitlesContainer) return;
@@ -1731,7 +1851,7 @@ export class HtmlVideoPlayer {
         }
 
         // download the track json
-        this.fetchSubtitles(track, item).then(data => {
+        this.fetchTextTrackEvents(videoElement, track, item, targetTextTrackIndex).then(({ data, follow }) => {
             // Exit if the video element was destroyed while fetching subtitles
             if (!this.#mediaElement) return;
 
@@ -1740,9 +1860,7 @@ export class HtmlVideoPlayer {
             const subtitleAppearance = userSettings.getSubtitleAppearanceSettings();
             const cueLine = parseInt(subtitleAppearance.verticalPosition, 10);
 
-            // add some cues to show the text
-            // in safari, the cues need to be added before setting the track mode to showing
-            for (const trackEvent of data.TrackEvents) {
+            const addCue = trackEvent => {
                 const TrackCue = window.VTTCue || window.TextTrackCue;
                 const text = normalizeTrackEventText(trackEvent.Text, false);
                 const cue = new TrackCue(trackEvent.StartPositionTicks / 10000000, trackEvent.EndPositionTicks / 10000000, text);
@@ -1757,9 +1875,23 @@ export class HtmlVideoPlayer {
                 }
 
                 trackElement.addCue(cue);
-            }
+            };
+
+            // add some cues to show the text
+            // in safari, the cues need to be added before setting the track mode to showing
+            data.TrackEvents.forEach(addCue);
 
             trackElement.mode = 'showing';
+
+            // A progressive read: the cues that arrive later are added as they come.
+            follow?.(
+                events => events.forEach(addCue),
+                whole => {
+                    while (trackElement.cues?.length) {
+                        trackElement.removeCue(trackElement.cues[0]);
+                    }
+                    whole.forEach(addCue);
+                });
         });
     }
 

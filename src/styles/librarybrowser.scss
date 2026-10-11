@@ -1488,3 +1488,17 @@ div:not(.sectionTitleContainer-cards) > .sectionTitle-cards {
     margin: 0;
     width: fit-content;
 }
+
+// Version picker while Gelato is still fetching the streams (see itemDetails, hasPendingVersions).
+.trackSelections .selectSourceLoading .detailTrackSelect {
+    color: transparent;
+    background-image: linear-gradient(90deg, rgba(255, 255, 255, 0.06) 25%, rgba(255, 255, 255, 0.16) 50%, rgba(255, 255, 255, 0.06) 75%);
+    background-size: 200% 100%;
+    animation: selectSourceLoading 1.2s ease-in-out infinite;
+    cursor: progress;
+}
+
+@keyframes selectSourceLoading {
+    from { background-position: 100% 0; }
+    to { background-position: -100% 0; }
+}

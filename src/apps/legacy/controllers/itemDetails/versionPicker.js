@@ -2,14 +2,14 @@
  * Version picker for titles with many sources (Gelato streams), in the spirit of AnimeBytes'
  * torrent lists: the versions grouped by resolution, one line each with the release group first
  * and its properties separated by pipes (source, container, codec, bit depth, HDR, audio,
- * languages, subtitles), and size, rating and cache state on the right.
+ * languages, subtitles), and size and cache state on the right.
  *
  * Languages answer "is mine there?": the line names the ones that matter to the viewer (their
  * audio and subtitle preferences, the interface language, the title's original language, English
  * for subtitles) and counts the rest, which the tooltip lists.
  *
  * The technical properties come from the source's media streams; the addon's formatted name only
- * gives what the streams cannot (release type, release group, rating, cache state) and stands in for the
+ * gives what the streams cannot (release type, release group, cache state) and stands in for the
  * streams when the source has not been probed. The native select stays the source of truth: a
  * pick sets its value and fires its change event, so the rest of the page works unchanged.
  */
@@ -333,9 +333,6 @@ export function describeSource(source, languages = { audio: new Set(), subtitles
     const subs = subtitleLanguages(subtitles, languages.subtitles);
     add('subs', subs.text, subs.variant, subs.title);
 
-    // AIOStreams' score of the version against the others for the title, 0-100 drawn as five
-    // stars with halves (⯪).
-    const stars = (name.match(/★/g) || []).length + ((name.match(/⯪/g) || []).length / 2);
     const cached = /⚡/.test(name);
 
     return {
@@ -343,7 +340,6 @@ export function describeSource(source, languages = { audio: new Set(), subtitles
         tokens,
         size: formatSize(source.Size) || sizeFromName(name),
         bitrate: formatBitrate(source.Bitrate),
-        stars,
         cached,
         mayNotPlay: isHevc && !browserPlaysHevc()
     };
@@ -358,17 +354,10 @@ function lineHtml(description) {
     }).join(' <span class="versionPickerSep">|</span> ');
 }
 
-function starsHtml(stars) {
-    const full = Math.floor(stars);
-    const title = escapeHtml(globalize.translate('VersionScore', stars));
-    return `<span class="versionPickerStars" title="${title}">${'★'.repeat(full)}${stars > full ? '⯪' : ''}</span>`;
-}
-
 function metaHtml(description) {
     const meta = [];
     // The size alone: the versions of a title run as long, so the bitrate only says it again.
     if (description.size) meta.push(`<span class="versionPickerSize" title="${escapeHtml(description.bitrate)}">${escapeHtml(description.size)}</span>`);
-    if (description.stars) meta.push(starsHtml(description.stars));
     if (description.cached) meta.push(`<span class="versionPickerCached" title="${escapeHtml(globalize.translate('VersionCached'))}">⚡</span>`);
     if (description.mayNotPlay) meta.push(`<span class="versionPickerWarn" title="${escapeHtml(globalize.translate('VersionMayNotPlay'))}">⚠</span>`);
     return meta.join('');
@@ -451,6 +440,8 @@ export function renderVersionPicker(container, select, mediaSources, user) {
     }
 
     container.classList.add('versionPickerActive');
+    // The picker takes the page's width: the track selections are otherwise kept narrow.
+    container.closest('.trackSelections')?.classList.add('trackSelectionsWide');
 
     if (!mediaSources) {
         picker._redraw = null;
@@ -504,5 +495,6 @@ export function renderVersionPicker(container, select, mediaSources, user) {
  */
 export function removeVersionPicker(container) {
     container.classList.remove('versionPickerActive');
+    container.closest('.trackSelections')?.classList.remove('trackSelectionsWide');
     container.querySelector('.versionPicker')?.remove();
 }

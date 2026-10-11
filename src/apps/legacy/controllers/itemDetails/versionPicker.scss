@@ -1,6 +1,10 @@
 // Version picker (versionPicker.js): AnimeBytes-style rows, pipe-separated properties.
 
-.selectSourceContainer.versionPickerActive {
+.trackSelections.trackSelectionsWide {
+    max-width: 80em;
+}
+
+.trackSelections .selectSourceContainer.versionPickerActive {
     flex-basis: 100%;
     max-width: 100%;
 
@@ -151,11 +155,6 @@
     border-radius: 1em;
     background: rgba(128, 128, 128, 0.22);
     text-align: center;
-}
-
-.versionPickerStars {
-    color: #e5b33b;
-    letter-spacing: -0.08em;
 }
 
 .versionPickerCached {

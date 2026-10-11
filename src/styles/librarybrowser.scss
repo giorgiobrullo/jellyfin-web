@@ -575,7 +575,8 @@
     background-attachment: fixed;
     height: 40vh;
     position: relative;
-    animation: backdrop-fadein 800ms ease-in normal both;
+    // Quick to show, gentle to finish: an ease-in fade is still near black after a third of a second.
+    animation: backdrop-fadein 400ms ease-out normal both;
 
     .layout-mobile & {
         background-attachment: initial;

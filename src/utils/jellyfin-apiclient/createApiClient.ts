@@ -15,16 +15,28 @@ const encodeParam = (value: string) => encodeURIComponent(safeDecodeURIComponent
 // still sees fresh data.
 const SHARED_ITEM_WINDOW_MS = 800;
 
+// An item asked for ahead of its page (the pointer resting on its card): the page's own request
+// takes it, once, instead of waiting for the server. Dropped after a while, and on any change
+// made through the client, so a page never shows an item older than that.
+const PREFETCHED_ITEM_TTL_MS = 15000;
+
 function shareItemRequests(apiClient: ApiClient) {
     const getItem = apiClient.getItem.bind(apiClient);
     const recent = new Map<string, { at: number, promise: ReturnType<typeof getItem> }>();
+    const prefetched = new Map<string, { at: number, promise: ReturnType<typeof getItem> }>();
+
+    const takePrefetched = (key: string, now: number) => {
+        const entry = prefetched.get(key);
+        prefetched.delete(key);
+        return entry && now - entry.at <= PREFETCHED_ITEM_TTL_MS ? entry.promise : null;
+    };
 
     apiClient.getItem = (userId: string, itemId: string) => {
         const key = `${userId}:${itemId}`;
         const now = Date.now();
         let entry = recent.get(key);
         if (!entry || now - entry.at > SHARED_ITEM_WINDOW_MS) {
-            const promise = getItem(userId, itemId);
+            const promise = takePrefetched(key, now) || getItem(userId, itemId);
             entry = { at: now, promise };
             recent.set(key, entry);
             promise.catch(() => recent.delete(key));
@@ -34,6 +46,34 @@ function shareItemRequests(apiClient: ApiClient) {
         }
         // Plain JSON from the server: a JSON round trip is a full copy.
         return entry.promise.then(item => JSON.parse(JSON.stringify(item)));
+    };
+
+    apiClient.prefetchItem = (userId: string, itemId: string) => {
+        const key = `${userId}:${itemId}`;
+        const now = Date.now();
+        const shared = recent.get(key);
+        const entry = prefetched.get(key);
+        if (shared && now - shared.at <= SHARED_ITEM_WINDOW_MS) {
+            return shared.promise;
+        }
+        if (entry && now - entry.at <= PREFETCHED_ITEM_TTL_MS) {
+            return entry.promise;
+        }
+        const promise = getItem(userId, itemId);
+        prefetched.set(key, { at: now, promise });
+        promise.catch(() => prefetched.delete(key));
+        for (const [k, e] of prefetched) {
+            if (now - e.at > PREFETCHED_ITEM_TTL_MS) prefetched.delete(k);
+        }
+        return promise;
+    };
+
+    const fetch = apiClient.fetch.bind(apiClient);
+    apiClient.fetch = (request: { type?: string }, includeAuthorization?: boolean) => {
+        if (request?.type && request.type.toUpperCase() !== 'GET') {
+            prefetched.clear();
+        }
+        return fetch(request, includeAuthorization);
     };
 
     // Several parts of the app ask for the signed-in user at start-up, before the first answer is

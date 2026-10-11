@@ -135,7 +135,8 @@ class ServerConnections extends ConnectionManager {
     onLocalUserSignedIn(user) {
         const apiClient = this.getApiClient(user.ServerId);
         this.setLocalApiClient(apiClient);
-        setTimeout(() => detectBitrate(this.getApi(user.ServerId), true), 6000);
+        // Not forced: a measurement from the last hour, kept across loads, is still good.
+        setTimeout(() => detectBitrate(this.getApi(user.ServerId), false), 6000);
         return setUserInfo(user.Id, apiClient).then(() => {
             if (window.NativeShell && typeof window.NativeShell.onLocalUserSignedIn === 'function') {
                 return window.NativeShell.onLocalUserSignedIn(user, apiClient.accessToken());

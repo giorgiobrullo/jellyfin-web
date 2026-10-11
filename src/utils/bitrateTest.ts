@@ -195,6 +195,33 @@ const detectBitrateWithEndpointInfo = (api: Api, endpointInfo: EndPointInfo) => 
     });
 };
 
+// The last measurement outlives the page: every load of the app, and every playback started
+// soon after one, would otherwise download 4.5 MB to measure the line again.
+const storageKey = (api: Api) => `bitratetest-${api.basePath}`;
+
+const restoreBitrate = (api: Api) => {
+    try {
+        const stored = JSON.parse(localStorage.getItem(storageKey(api)) || 'null');
+        if (typeof stored?.bitrate === 'number' && typeof stored.at === 'number' && stored.bitrate > 0) {
+            lastDetectedBitrate = stored.bitrate;
+            lastDetectedBitrateTime = stored.at;
+        }
+    } catch {
+        // Storage unavailable or corrupt: measure again.
+    }
+};
+
+const storeBitrate = (api: Api, bitrate: number) => {
+    if (!bitrate) {
+        return;
+    }
+    try {
+        localStorage.setItem(storageKey(api), JSON.stringify({ bitrate, at: Date.now() }));
+    } catch {
+        // Storage full or unavailable: the measurement stays in memory.
+    }
+};
+
 /**
  * Detects the bitrate on the current device
  * @param {Api} api The Api client
@@ -202,6 +229,10 @@ const detectBitrateWithEndpointInfo = (api: Api, endpointInfo: EndPointInfo) => 
  * @returns {number} The detected bitrate
  */
 export const detectBitrate = (api: Api, force: boolean) => {
+    if (!force && !lastDetectedBitrate) {
+        restoreBitrate(api);
+    }
+
     if (!force
         && lastDetectedBitrate
         && Date.now() - (lastDetectedBitrateTime || 0) <= BITRATE_CACHE_DURATION) {
@@ -217,7 +248,10 @@ export const detectBitrate = (api: Api, force: boolean) => {
         .then(
             (response) => detectBitrateWithEndpointInfo(api, response.data),
             () => detectBitrateWithEndpointInfo(api, {})
-        ).finally(() => {
+        ).then(bitrate => {
+            storeBitrate(api, bitrate);
+            return bitrate;
+        }).finally(() => {
             pendingBitrateDetection = null;
         });
 

@@ -13,6 +13,7 @@ import inputManager from '../scripts/inputManager';
 import { appRouter } from './router/appRouter';
 import globalize from '../lib/globalize';
 import dom from '../utils/dom';
+import layoutManager from './layoutManager';
 import recordingHelper from './recordingcreator/recordinghelper';
 import toast from './toast/toast';
 import * as userSettings from '../scripts/settings/userSettings';
@@ -132,9 +133,9 @@ function prefetchMenu(e) {
 
 document.addEventListener('pointerover', prefetchMenu, { passive: true });
 
-// Pressing the mouse on a card starts the request for its item: the details page that the click
-// opens a moment later asks for it again and shares the request in flight (see createApiClient)
-// instead of starting it ~100-200 ms later. Mouse only: on touch a press is often a scroll.
+// Pressing the mouse on a card starts the request for its item, if hovering has not: the details
+// page that the click opens a moment later takes it (see createApiClient) instead of starting it
+// ~100-200 ms later. Mouse only: on touch a press is often a scroll.
 function prefetchOnPress(e) {
     if (e.pointerType !== 'mouse' || e.button !== 0) {
         return;
@@ -149,10 +150,71 @@ function prefetchOnPress(e) {
         return;
     }
     const apiClient = ServerConnections.getApiClient(card.getAttribute('data-serverid'));
-    apiClient?.getItem(apiClient.getCurrentUserId(), card.getAttribute('data-id')).catch(() => { /* the page asks again */ });
+    apiClient?.prefetchItem(apiClient.getCurrentUserId(), card.getAttribute('data-id'));
 }
 
 document.addEventListener('pointerdown', prefetchOnPress, { passive: true });
+
+// A pointer that rests on a card for a moment usually clicks it: its item is asked for then, and
+// the details page opens without waiting for the server (createApiClient's prefetchItem). Only the
+// kinds of item whose card opens the details page; passing over a row asks for nothing.
+const HOVER_PREFETCH_DELAY_MS = 120;
+const DETAILS_PAGE_TYPES = new Set(['Movie', 'Series', 'Season', 'Episode', 'Video', 'BoxSet', 'MusicAlbum', 'MusicArtist', 'Person', 'Trailer']);
+let hoverTimer = null;
+let hoverCard = null;
+
+function prefetchOnHover(e) {
+    if (e.pointerType !== 'mouse') {
+        return;
+    }
+    const card = e.target?.closest?.('.card[data-id]');
+    if (card === hoverCard) {
+        return;
+    }
+    clearTimeout(hoverTimer);
+    hoverCard = card;
+    if (!card || !DETAILS_PAGE_TYPES.has(card.getAttribute('data-type'))) {
+        return;
+    }
+    hoverTimer = setTimeout(() => {
+        if (hoverCard !== card || !card.isConnected) {
+            return;
+        }
+        const apiClient = ServerConnections.getApiClient(card.getAttribute('data-serverid'));
+        apiClient?.prefetchItem(apiClient.getCurrentUserId(), card.getAttribute('data-id'))
+            .then(item => {
+                if (hoverCard === card) preloadDetailsImages(apiClient, item);
+            })
+            .catch(() => { /* the page asks again */ });
+    }, HOVER_PREFETCH_DELAY_MS);
+}
+
+// The logo and the backdrop the details page shows first, with the URLs it builds for them
+// (itemDetails renderLogo, backdrop getItemImageUrls): in the browser's cache by the click.
+function preloadDetailsImages(apiClient, item) {
+    const urls = [];
+    if (item.ImageTags?.Logo) {
+        urls.push(apiClient.getScaledImageUrl(item.Id, { type: 'Logo', tag: item.ImageTags.Logo }));
+    } else if (item.ParentLogoImageTag) {
+        urls.push(apiClient.getScaledImageUrl(item.ParentLogoItemId, { type: 'Logo', tag: item.ParentLogoImageTag }));
+    }
+
+    const backdropShown = !layoutManager.mobile && dom.getWindowSize().innerWidth >= 1000
+        && ((!layoutManager.tv && userSettings.detailsBanner()) || userSettings.enableBackdrops());
+    if (backdropShown) {
+        if (item.BackdropImageTags?.length) {
+            urls.push(apiClient.getScaledImageUrl(item.BackdropItemId || item.Id, { type: 'Backdrop', tag: item.BackdropImageTags[0], maxWidth: dom.getScreenWidth(), index: 0 }));
+        } else if (item.ParentBackdropItemId && item.ParentBackdropImageTags?.length) {
+            urls.push(apiClient.getScaledImageUrl(item.ParentBackdropItemId, { type: 'Backdrop', tag: item.ParentBackdropImageTags[0], maxWidth: dom.getScreenWidth(), index: 0 }));
+        }
+    }
+
+    for (const url of urls) {
+        new Image().src = url;
+    }
+}
+
+document.addEventListener('pointerover', prefetchOnHover, { passive: true });
 document.addEventListener('focusin', prefetchMenu, { passive: true });
 
 function notifyRefreshNeeded(childElement, itemsContainer) {

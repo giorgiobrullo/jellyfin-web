@@ -434,7 +434,7 @@ export function renderVersionPicker(container, select, mediaSources, user) {
         // the line it stands for.
         const pills = widths => widths.map(width => `<span class="versionPickerSkeleton" style="width:${width}em"></span>`).join('');
         const label = escapeHtml(globalize.translate('LoadingVersions'));
-        picker.innerHTML = `<button type="button" class="versionPickerCurrent" disabled aria-label="${label}" title="${label}">
+        picker.innerHTML = `<button type="button" class="versionPickerCurrent emby-select-withcolor" disabled aria-label="${label}" title="${label}">
             <span class="versionPickerLine versionPickerSkeletonLine">${pills([5, 3.5, 2.5, 5.5, 3, 4.5, 6, 2.5, 5])}</span>
             <span class="versionPickerMeta">${pills([3.5, 4])}</span>
             <span class="versionPickerSpinner" aria-hidden="true"></span>
@@ -461,7 +461,7 @@ export function renderVersionPicker(container, select, mediaSources, user) {
         const rows = [...groups.entries()].map(([group, entries]) => groupHtml(group, entries, selected.source.Id)).join('');
 
         const expanded = String(picker.classList.contains('versionPickerOpen'));
-        picker.innerHTML = '<button type="button" class="versionPickerCurrent" aria-haspopup="listbox" aria-expanded="' + expanded + '">'
+        picker.innerHTML = '<button type="button" class="versionPickerCurrent emby-select-withcolor" aria-haspopup="listbox" aria-expanded="' + expanded + '">'
             + '<span class="versionPickerLine">' + lineHtml(selected.description) + '</span>'
             + '<span class="versionPickerMeta">' + metaHtml(selected.description) + '</span>'
             + '<span class="versionPickerCount">' + described.length + '</span>'

@@ -92,6 +92,15 @@
     </div>
     <!-- Abyss Spotlight (served from web/ui on our server): loaded with the page rather than by
          the JavaScript Injector after sign-in, so the banner is there with the home screen. -->
-    <script defer src="ui/spotlight-loader.js" data-abyss-spotlight></script>
+    <script>
+        (function () {
+            // Added at run time: the build would otherwise try to bundle a file that only the
+            // server has.
+            var s = document.createElement('script');
+            s.src = 'ui/spotlight-loader.js';
+            s.setAttribute('data-abyss-spotlight', '');
+            document.body.appendChild(s);
+        })();
+    </script>
 </body>
 </html>

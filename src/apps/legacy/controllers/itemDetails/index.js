@@ -34,7 +34,7 @@ import browser from 'scripts/browser';
 import datetime from 'scripts/datetime';
 import dom from 'utils/dom';
 import { renderComponent } from 'utils/reactUtils';
-import { removeVersionPicker, renderVersionPicker } from './versionPicker';
+import { removeVersionPicker, renderNoVersions, renderVersionPicker } from './versionPicker';
 import { download } from 'scripts/fileDownloader';
 import libraryMenu from 'scripts/libraryMenu';
 import * as userSettings from 'scripts/settings/userSettings';
@@ -218,6 +218,7 @@ function waitForVersions(instance, item) {
     }
 
     cancelVersionsPoll(instance);
+    instance._versionsWaitedFor = item.Id;
     const poll = { itemId: item.Id, cancelled: false, started: Date.now() };
     instance._versionsPoll = poll;
     const apiClient = ServerConnections.getApiClient(item.ServerId);
@@ -232,13 +233,15 @@ function waitForVersions(instance, item) {
                 return;
             }
 
-            if (hasPendingVersions(fresh) && Date.now() - poll.started < PENDING_VERSIONS_LIMIT_MS) {
+            const stillPending = hasPendingVersions(fresh);
+            if (stillPending && Date.now() - poll.started < PENDING_VERSIONS_LIMIT_MS) {
                 setTimeout(tick, PENDING_VERSIONS_POLL_MS);
                 return;
             }
 
             instance._versionsPoll = null;
-            instance._onVersionsReady?.(fresh);
+            // Still pending after the limit: give up rather than start waiting again.
+            instance._onVersionsReady?.(fresh, stillPending);
         }).catch(err => {
             console.warn('[ItemDetails] could not check for the versions', err);
             if (!poll.cancelled && Date.now() - poll.started < PENDING_VERSIONS_LIMIT_MS) {
@@ -250,9 +253,26 @@ function waitForVersions(instance, item) {
     setTimeout(tick, PENDING_VERSIONS_POLL_MS);
 }
 
-function renderTrackSelections(page, instance, item, forceReload) {
+function renderTrackSelections(page, instance, item, forceReload, gaveUp) {
     const select = page.querySelector('.selectSource');
     const sourceContainer = page.querySelector('.selectSourceContainer');
+
+    // The versions were waited for and none came (Gelato found no stream; the item is then marked
+    // virtual), or they took too long: say so instead of leaving the picker loading or empty.
+    if (item.MediaType === 'Video' && instance._versionsWaitedFor === item.Id && (gaveUp || item.LocationType === 'Virtual')) {
+        page.querySelector('.trackSelections').classList.remove('hide');
+        select.disabled = true;
+        sourceContainer.classList.remove('hide', 'selectSourceLoading');
+        page.querySelector('.selectVideo').innerHTML = '';
+        page.querySelector('.selectAudio').innerHTML = '';
+        page.querySelector('.selectSubtitles').innerHTML = '';
+        if (layoutManager.tv) {
+            select.innerHTML = '<option value="">' + escapeHtml(globalize.translate('NoVersionsFound')) + '</option>';
+        } else {
+            renderNoVersions(sourceContainer);
+        }
+        return;
+    }
 
     // Not itemHelper.supportsMediaSourceSelection: it turns down an item whose only source is a
     // placeholder, which is just what a title still being fetched has.
@@ -2201,12 +2221,12 @@ export default function (view, params) {
     const self = this;
 
     // The versions Gelato was still fetching when the page loaded have arrived.
-    self._onVersionsReady = function (freshItem) {
+    self._onVersionsReady = function (freshItem, gaveUp) {
         if (!currentItem || currentItem.Id !== freshItem.Id) {
             return;
         }
         currentItem = freshItem;
-        renderTrackSelections(view, self, freshItem, true);
+        renderTrackSelections(view, self, freshItem, true, gaveUp);
         reloadPlayButtons(view, freshItem);
     };
 

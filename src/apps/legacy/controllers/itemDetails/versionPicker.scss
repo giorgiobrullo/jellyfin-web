@@ -266,6 +266,10 @@
     }
 }
 
+.versionPickerEmpty {
+    cursor: default;
+}
+
 .versionPickerLoading .versionPickerCurrent {
     cursor: progress;
 }

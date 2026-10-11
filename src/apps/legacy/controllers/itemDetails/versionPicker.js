@@ -490,6 +490,27 @@ export function renderVersionPicker(container, select, mediaSources, user) {
 }
 
 /**
+ * Says that no version was found, in the picker's place.
+ * @param {HTMLElement} container The select's container.
+ */
+export function renderNoVersions(container) {
+    container.classList.add('versionPickerActive');
+    container.closest('.trackSelections')?.classList.add('trackSelectionsWide');
+    let picker = container.querySelector('.versionPicker');
+    if (!picker) {
+        picker = document.createElement('div');
+        picker.className = 'versionPicker';
+        container.appendChild(picker);
+    }
+    picker._redraw = null;
+    picker.classList.remove('versionPickerLoading', 'versionPickerOpen');
+    picker.innerHTML = '<div class="versionPickerCurrent versionPickerEmpty emby-select-withcolor">'
+        + '<span class="material-icons versionPickerDim" aria-hidden="true">search_off</span>'
+        + '<span class="versionPickerDim">' + escapeHtml(globalize.translate('NoVersionsFound')) + '</span>'
+        + '</div>';
+}
+
+/**
  * Removes the picker and gives the select its place back.
  * @param {HTMLElement} container The select's container.
  */

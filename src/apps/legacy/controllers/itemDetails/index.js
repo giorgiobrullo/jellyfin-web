@@ -207,10 +207,50 @@ function hasPendingVersions(item) {
     return !!item.MediaSources?.length && item.MediaSources.every(m => m.Type === 'Placeholder');
 }
 
+// Gelato syncs a title's streams again 10 s and 45 s after the first answer, adding the ones
+// from addons that answered later (GelatoManager.ScheduleFollowUpSyncs): the picker checks after
+// each and shows the new versions, keeping the one chosen.
+const MORE_VERSIONS_CHECKS_MS = [13000, 48000];
+const MORE_VERSIONS_RETRY_MS = 3000;
+
 function cancelVersionsPoll(instance) {
     if (instance._versionsPoll) {
         instance._versionsPoll.cancelled = true;
         instance._versionsPoll = null;
+    }
+    if (instance._moreVersions) {
+        instance._moreVersions.cancelled = true;
+        instance._moreVersions.timers.forEach(clearTimeout);
+        instance._moreVersions = null;
+    }
+}
+
+function watchForMoreVersions(instance, item) {
+    const watch = { itemId: item.Id, cancelled: false, timers: [] };
+    instance._moreVersions = watch;
+    const apiClient = ServerConnections.getApiClient(item.ServerId);
+
+    const check = () => {
+        if (watch.cancelled) {
+            return;
+        }
+        // Not under the pointer: the list would change while one is being picked.
+        if (document.querySelector('.itemDetailPage:not(.hide) .versionPickerOpen')) {
+            watch.timers.push(setTimeout(check, MORE_VERSIONS_RETRY_MS));
+            return;
+        }
+        apiClient.getItem(apiClient.getCurrentUserId(), item.Id).then(fresh => {
+            const shown = instance._currentPlaybackMediaSources?.length || 0;
+            if (!watch.cancelled && !hasPendingVersions(fresh) && (fresh.MediaSources?.length || 0) > shown) {
+                instance._onVersionsReady?.(fresh, false);
+            }
+        }).catch(err => {
+            console.warn('[ItemDetails] could not check for more versions', err);
+        });
+    };
+
+    for (const delay of MORE_VERSIONS_CHECKS_MS) {
+        watch.timers.push(setTimeout(check, delay));
     }
 }
 
@@ -244,6 +284,9 @@ function waitForVersions(instance, item) {
             instance._versionsPoll = null;
             // Still pending after the limit: give up rather than start waiting again.
             instance._onVersionsReady?.(fresh, stillPending);
+            if (!stillPending) {
+                watchForMoreVersions(instance, fresh);
+            }
         }).catch(err => {
             console.warn('[ItemDetails] could not check for the versions', err);
             if (!poll.cancelled && Date.now() - poll.started < PENDING_VERSIONS_LIMIT_MS) {

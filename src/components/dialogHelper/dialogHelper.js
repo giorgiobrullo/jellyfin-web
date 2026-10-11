@@ -384,9 +384,11 @@ function removeBackdrop(dlg) {
 
     if (enableAnimation()) {
         backdrop.classList.remove('dialogBackdropOpened');
+        // Fading out, it no longer takes the clicks meant for the page.
+        backdrop.style.pointerEvents = 'none';
 
         // this is not firing animationend
-        setTimeout(onAnimationFinish, 300);
+        setTimeout(onAnimationFinish, 150);
         return;
     }
 
@@ -439,9 +441,9 @@ export function createDialog(options = {}) {
     const entryAnimation = options.entryAnimation || defaultEntryAnimation;
     const exitAnimation = options.exitAnimation || defaultExitAnimation;
 
-    // If it's not fullscreen then lower the default animation speed to make it open really fast
-    const entryAnimationDuration = options.entryAnimationDuration || (options.size !== 'fullscreen' ? 180 : 280);
-    const exitAnimationDuration = options.exitAnimationDuration || (options.size !== 'fullscreen' ? 120 : 220);
+    // Short enough that a menu or dialog feels instant, long enough to see where it came from.
+    const entryAnimationDuration = options.entryAnimationDuration || (options.size !== 'fullscreen' ? 100 : 160);
+    const exitAnimationDuration = options.exitAnimationDuration || (options.size !== 'fullscreen' ? 70 : 120);
 
     dlg.animationConfig = {
         // scale up

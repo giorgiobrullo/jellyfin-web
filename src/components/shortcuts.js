@@ -79,11 +79,15 @@ function showProgramDialog(item) {
     });
 }
 
-function getItem(button) {
-    button = dom.parentWithAttribute(button, 'data-id');
-    const serverId = button.getAttribute('data-serverid');
-    const id = button.getAttribute('data-id');
-    const type = button.getAttribute('data-type');
+// The item a card's menu needs, asked for when the pointer reaches the menu button: by the click
+// it is usually there, and the menu opens without a round trip to the server.
+const MENU_PREFETCH_TTL_MS = 15000;
+const menuPrefetches = new Map();
+
+function fetchCardItem(card) {
+    const serverId = card.getAttribute('data-serverid');
+    const id = card.getAttribute('data-id');
+    const type = card.getAttribute('data-type');
 
     const apiClient = ServerConnections.getApiClient(serverId);
 
@@ -95,6 +99,39 @@ function getItem(button) {
     }
     return apiClient.getItem(apiClient.getCurrentUserId(), id);
 }
+
+function getItem(button) {
+    const card = dom.parentWithAttribute(button, 'data-id');
+    const key = card.getAttribute('data-serverid') + ':' + card.getAttribute('data-id');
+    const prefetched = menuPrefetches.get(key);
+    menuPrefetches.delete(key);
+    if (prefetched && Date.now() - prefetched.at < MENU_PREFETCH_TTL_MS) {
+        return prefetched.promise.catch(() => fetchCardItem(card));
+    }
+    return fetchCardItem(card);
+}
+
+function prefetchMenu(e) {
+    const button = e.target?.closest?.('[data-action="menu"]');
+    const card = button && dom.parentWithAttribute(button, 'data-id');
+    if (!card) {
+        return;
+    }
+
+    const key = card.getAttribute('data-serverid') + ':' + card.getAttribute('data-id');
+    const prefetched = menuPrefetches.get(key);
+    if (prefetched && Date.now() - prefetched.at < MENU_PREFETCH_TTL_MS) {
+        return;
+    }
+
+    const promise = fetchCardItem(card);
+    promise.catch(() => menuPrefetches.delete(key));
+    menuPrefetches.set(key, { at: Date.now(), promise });
+    import('./itemContextMenu');
+}
+
+document.addEventListener('pointerover', prefetchMenu, { passive: true });
+document.addEventListener('focusin', prefetchMenu, { passive: true });
 
 function notifyRefreshNeeded(childElement, itemsContainer) {
     itemsContainer = itemsContainer || dom.parentWithAttribute(childElement, 'is', 'emby-itemscontainer');
@@ -109,8 +146,32 @@ function notifyRefreshNeeded(childElement, itemsContainer) {
 }
 
 function showContextMenu(card, options = {}) {
-    getItem(card).then(item => {
-        const playlistId = card.getAttribute('data-playlistid');
+    const playlistId = card.getAttribute('data-playlistid');
+    const serverId = dom.parentWithAttribute(card, 'data-id')?.getAttribute('data-serverid');
+    const apiClient = ServerConnections.getApiClient(serverId);
+    const api = ServerConnections.getApi(serverId);
+
+    // The item, the menu's code, the user and the playlist permissions are fetched together,
+    // not the item first and the rest after it.
+    Promise.all([
+        getItem(card),
+        import('./itemContextMenu'),
+        apiClient?.getCurrentUser(),
+        api && playlistId ?
+            getPlaylistApi(api)
+                .getPlaylistUser({
+                    playlistId,
+                    userId: apiClient?.getCurrentUserId()
+                })
+                .then(({ data }) => data)
+                .catch(err => {
+                    // If a user doesn't have access, then the request will 404 and throw
+                    console.info('[Shortcuts] Failed to fetch playlist permissions', err);
+                    return { CanEdit: false };
+                }) :
+            // Not a playlist item
+            Promise.resolve({ CanEdit: false })
+    ]).then(([item, itemContextMenu, user, playlistPerms]) => {
         const collectionId = card.getAttribute('data-collectionid');
 
         if (playlistId) {
@@ -131,35 +192,8 @@ function showContextMenu(card, options = {}) {
             }
         }
 
-        const api = ServerConnections.getApi(item.ServerId);
-        const apiClient = ServerConnections.getApiClient(item.ServerId);
-
-        Promise.all([
-            // Import the item menu component
-            import('./itemContextMenu'),
-            // Fetch the current user
-            apiClient?.getCurrentUser(),
-            // Fetch playlist perms if item is a child of a playlist
-            api && playlistId ?
-                getPlaylistApi(api)
-                    .getPlaylistUser({
-                        playlistId,
-                        userId: apiClient?.getCurrentUserId()
-                    })
-                    .then(({ data }) => data)
-                    .catch(err => {
-                        // If a user doesn't have access, then the request will 404 and throw
-                        console.info('[Shortcuts] Failed to fetch playlist permissions', err);
-                        return { CanEdit: false };
-                    }) :
-                // Not a playlist item
-                Promise.resolve({ CanEdit: false })
-        ])
-            .then(([
-                itemContextMenu,
-                user,
-                playlistPerms
-            ]) => {
+        Promise.resolve()
+            .then(() => {
                 return itemContextMenu.show({
                     item,
                     play: true,
@@ -181,7 +215,7 @@ function showContextMenu(card, options = {}) {
                 }
             })
             .catch(() => { /* no-op */ });
-    });
+    }).catch(err => console.warn('[Shortcuts] could not open the item menu', err));
 }
 
 function getItemInfoFromCard(card) {

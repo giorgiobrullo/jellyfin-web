@@ -210,7 +210,8 @@ export function enable() {
                 break;
 
             case 'Escape':
-                if (layoutManager.tv) {
+                // On desktop too when a menu or dialog is open: Escape closes it.
+                if (layoutManager.tv || document.querySelector('.dialogContainer .dialog')) {
                     inputManager.handleCommand('back');
                 } else {
                     capture = false;

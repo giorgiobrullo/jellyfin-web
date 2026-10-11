@@ -14,6 +14,7 @@ import { appRouter } from './router/appRouter';
 import globalize from '../lib/globalize';
 import dom from '../utils/dom';
 import layoutManager from './layoutManager';
+import { getSeasonsQuery } from '../apps/legacy/controllers/itemDetails/seasonsQuery';
 import recordingHelper from './recordingcreator/recordinghelper';
 import toast from './toast/toast';
 import * as userSettings from '../scripts/settings/userSettings';
@@ -182,6 +183,9 @@ function prefetchOnHover(e) {
         }
         preloadDetailsPage();
         const apiClient = ServerConnections.getApiClient(card.getAttribute('data-serverid'));
+        if (card.getAttribute('data-type') === 'Series') {
+            apiClient?.prefetchSeasons(card.getAttribute('data-id'), getSeasonsQuery(apiClient.getCurrentUserId()));
+        }
         apiClient?.prefetchItem(apiClient.getCurrentUserId(), card.getAttribute('data-id'))
             .then(item => {
                 if (hoverCard === card) preloadDetailsImages(apiClient, item);

@@ -146,6 +146,8 @@ declare module 'jellyfin-apiclient' {
         getItem(userId: string, itemId: string): Promise<BaseItemDto>;
         /** Asks for an item ahead of its page; the page's getItem takes it (createApiClient). */
         prefetchItem(userId: string, itemId: string): Promise<BaseItemDto>;
+        /** Asks for a series' seasons ahead of its page; getSeasons with the same options takes them. */
+        prefetchSeasons(itemId: string, options?: any): void;
         getJSON(url: string, includeAuthorization?: boolean): Promise<any>;
         getLatestItems(options?: any): Promise<BaseItemDto[]>;
         getLiveStreamMediaInfo(liveStreamId: string): Promise<any>;

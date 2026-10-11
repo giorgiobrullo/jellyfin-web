@@ -35,6 +35,7 @@ import datetime from 'scripts/datetime';
 import dom from 'utils/dom';
 import { renderComponent } from 'utils/reactUtils';
 import { removeVersionPicker, renderNoVersions, renderVersionPicker } from './versionPicker';
+import { getSeasonsQuery, SEASONS_FIELDS } from './seasonsQuery';
 import { download } from 'scripts/fileDownloader';
 import libraryMenu from 'scripts/libraryMenu';
 import * as userSettings from 'scripts/settings/userSettings';
@@ -1465,7 +1466,7 @@ function renderChildren(page, item) {
     const childrenCollapsible = page.querySelector(LIST_VIEW_TYPES.includes(item.Type) ? '#listChildrenCollapsible' : '#childrenCollapsible');
     const childrenItemsContainer = childrenCollapsible.querySelector('.itemsContainer');
 
-    let fields = 'ItemCounts,PrimaryImageAspectRatio,CanDelete,MediaSourceCount';
+    let fields = SEASONS_FIELDS;
     const query = {
         ParentId: item.Id,
         Fields: fields
@@ -1482,10 +1483,7 @@ function renderChildren(page, item) {
     const userId = apiClient.getCurrentUserId();
 
     if (item.Type == 'Series') {
-        promise = apiClient.getSeasons(item.Id, {
-            userId: userId,
-            Fields: fields
-        });
+        promise = apiClient.getSeasons(item.Id, getSeasonsQuery(userId));
     } else if (item.Type == 'Season') {
         fields += ',Overview';
         promise = apiClient.getEpisodes(item.SeriesId, {

@@ -68,10 +68,42 @@ function shareItemRequests(apiClient: ApiClient) {
         return promise;
     };
 
+    // A series' seasons, asked for with its item when the pointer rests on its card: the series
+    // page's own request (same series, same options) takes them, once.
+    const getSeasons = apiClient.getSeasons.bind(apiClient);
+    const prefetchedSeasons = new Map<string, { at: number, promise: ReturnType<typeof getSeasons> }>();
+    const seasonsKey = (itemId: string, options?: unknown) => `${itemId}:${JSON.stringify(options ?? {})}`;
+
+    apiClient.getSeasons = (itemId: string, options?: Record<string, unknown>) => {
+        const key = seasonsKey(itemId, options);
+        const entry = prefetchedSeasons.get(key);
+        prefetchedSeasons.delete(key);
+        if (entry && Date.now() - entry.at <= PREFETCHED_ITEM_TTL_MS) {
+            return entry.promise.then(result => JSON.parse(JSON.stringify(result)));
+        }
+        return getSeasons(itemId, options);
+    };
+
+    apiClient.prefetchSeasons = (itemId: string, options?: Record<string, unknown>) => {
+        const key = seasonsKey(itemId, options);
+        const now = Date.now();
+        const entry = prefetchedSeasons.get(key);
+        if (entry && now - entry.at <= PREFETCHED_ITEM_TTL_MS) {
+            return;
+        }
+        const promise = getSeasons(itemId, options);
+        prefetchedSeasons.set(key, { at: now, promise });
+        promise.catch(() => prefetchedSeasons.delete(key));
+        for (const [k, e] of prefetchedSeasons) {
+            if (now - e.at > PREFETCHED_ITEM_TTL_MS) prefetchedSeasons.delete(k);
+        }
+    };
+
     const fetch = apiClient.fetch.bind(apiClient);
     apiClient.fetch = (request: { type?: string }, includeAuthorization?: boolean) => {
         if (request?.type && request.type.toUpperCase() !== 'GET') {
             prefetched.clear();
+            prefetchedSeasons.clear();
         }
         return fetch(request, includeAuthorization);
     };

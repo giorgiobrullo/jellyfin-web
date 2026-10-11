@@ -60,11 +60,29 @@ queryClient = new QueryClient({
     }
 });
 
+/** How long a cache write may wait for the browser to be idle. */
+const PERSIST_IDLE_TIMEOUT = 2000;
+
+/**
+ * Runs a task once the browser is idle: writing the cache to IndexedDB copies all of it on the
+ * main thread (~25 ms with a library page in it), which landed in the middle of the page being
+ * rendered after a navigation.
+ */
+const whenIdle = (task: () => void) => {
+    if (typeof window.requestIdleCallback === 'function') {
+        window.requestIdleCallback(task, { timeout: PERSIST_IDLE_TIMEOUT });
+    } else {
+        setTimeout(task, 200);
+    }
+};
+
 /** Create an IndexedDB persister for react-query-persist-client. Uses idb-keyval for simplicity. */
 const createIDBPersister = (idbValidKey: IDBValidKey = 'query-cache') => ({
-    persistClient: async (client: PersistedClient) => {
-        await set(idbValidKey, client);
-    },
+    persistClient: (client: PersistedClient) => new Promise<void>((resolve, reject) => {
+        whenIdle(() => {
+            set(idbValidKey, client).then(resolve, reject);
+        });
+    }),
     restoreClient: () => {
         return get<PersistedClient>(idbValidKey);
     },

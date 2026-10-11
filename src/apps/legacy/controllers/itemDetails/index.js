@@ -214,6 +214,7 @@ const MORE_VERSIONS_CHECKS_MS = [13000, 48000];
 const MORE_VERSIONS_RETRY_MS = 3000;
 
 function cancelVersionsPoll(instance) {
+    instance._searchingMore = false;
     if (instance._versionsPoll) {
         instance._versionsPoll.cancelled = true;
         instance._versionsPoll = null;
@@ -240,18 +241,39 @@ function watchForMoreVersions(instance, item) {
             return;
         }
         apiClient.getItem(apiClient.getCurrentUserId(), item.Id).then(fresh => {
+            if (watch.cancelled) {
+                return;
+            }
             const shown = instance._currentPlaybackMediaSources?.length || 0;
-            if (!watch.cancelled && !hasPendingVersions(fresh) && (fresh.MediaSources?.length || 0) > shown) {
+            if (!hasPendingVersions(fresh) && !hasNoVersions(fresh) && (fresh.MediaSources?.length || 0) > shown) {
+                instance._searchingMore = false;
                 instance._onVersionsReady?.(fresh, false);
+            } else if (instance._searchingMore && ++watch.checksDone >= MORE_VERSIONS_CHECKS_MS.length) {
+                // The last of Gelato's follow-up syncs found nothing either: now there are none.
+                instance._searchingMore = false;
+                instance._onVersionsReady?.(fresh, true);
             }
         }).catch(err => {
             console.warn('[ItemDetails] could not check for more versions', err);
         });
     };
 
+    watch.checksDone = 0;
     for (const delay of MORE_VERSIONS_CHECKS_MS) {
         watch.timers.push(setTimeout(check, delay));
     }
+}
+
+// Gelato marks a title whose sync found no stream as virtual; it may still find some in its
+// follow-up syncs.
+function hasNoVersions(item) {
+    return item.LocationType === 'Virtual' || !item.MediaSources?.length;
+}
+
+// Not out yet (an episode airing later): a longer search would not find it either.
+function isUnreleased(item) {
+    const premiere = item.PremiereDate ? Date.parse(item.PremiereDate) : NaN;
+    return !Number.isNaN(premiere) && premiere > Date.now();
 }
 
 function waitForVersions(instance, item) {
@@ -282,6 +304,10 @@ function waitForVersions(instance, item) {
             }
 
             instance._versionsPoll = null;
+            // None in the first answer: the picker keeps searching while Gelato's follow-up syncs
+            // ask the addons again (some answer only after the first answer's time limit), and
+            // says there are none only if the last of them finds none.
+            instance._searchingMore = !stillPending && hasNoVersions(fresh) && !isUnreleased(fresh);
             // Still pending after the limit: give up rather than start waiting again.
             instance._onVersionsReady?.(fresh, stillPending);
             if (!stillPending) {
@@ -298,9 +324,31 @@ function waitForVersions(instance, item) {
     setTimeout(tick, PENDING_VERSIONS_POLL_MS);
 }
 
+function renderVersionsLoading(page, select, sourceContainer) {
+    page.querySelector('.trackSelections').classList.remove('hide');
+    select.setLabel(globalize.translate('LabelVersion'));
+    select.innerHTML = '<option value="">' + escapeHtml(globalize.translate('LoadingVersions')) + '</option>';
+    select.disabled = true;
+    sourceContainer.classList.remove('hide');
+    if (layoutManager.tv) {
+        sourceContainer.classList.add('selectSourceLoading');
+    } else {
+        renderVersionPicker(sourceContainer, select, null);
+    }
+    page.querySelector('.selectVideo').innerHTML = '';
+    page.querySelector('.selectAudio').innerHTML = '';
+    page.querySelector('.selectSubtitles').innerHTML = '';
+}
+
 function renderTrackSelections(page, instance, item, forceReload, gaveUp) {
     const select = page.querySelector('.selectSource');
     const sourceContainer = page.querySelector('.selectSourceContainer');
+
+    // None yet, but Gelato's follow-up syncs are still asking (watchForMoreVersions).
+    if (item.MediaType === 'Video' && instance._searchingMore && instance._versionsWaitedFor === item.Id && !gaveUp) {
+        renderVersionsLoading(page, select, sourceContainer);
+        return;
+    }
 
     // The versions were waited for and none came (Gelato found no stream; the item is then marked
     // virtual), or they took too long: say so instead of leaving the picker loading or empty.
@@ -322,19 +370,7 @@ function renderTrackSelections(page, instance, item, forceReload, gaveUp) {
     // Not itemHelper.supportsMediaSourceSelection: it turns down an item whose only source is a
     // placeholder, which is just what a title still being fetched has.
     if (item.MediaType === 'Video' && hasPendingVersions(item)) {
-        page.querySelector('.trackSelections').classList.remove('hide');
-        select.setLabel(globalize.translate('LabelVersion'));
-        select.innerHTML = '<option value="">' + escapeHtml(globalize.translate('LoadingVersions')) + '</option>';
-        select.disabled = true;
-        sourceContainer.classList.remove('hide');
-        if (layoutManager.tv) {
-            sourceContainer.classList.add('selectSourceLoading');
-        } else {
-            renderVersionPicker(sourceContainer, select, null);
-        }
-        page.querySelector('.selectVideo').innerHTML = '';
-        page.querySelector('.selectAudio').innerHTML = '';
-        page.querySelector('.selectSubtitles').innerHTML = '';
+        renderVersionsLoading(page, select, sourceContainer);
         waitForVersions(instance, item);
         return;
     }

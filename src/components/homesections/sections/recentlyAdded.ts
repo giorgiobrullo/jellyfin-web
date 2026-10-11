@@ -143,6 +143,7 @@ function renderLatestSection(
     itemsContainer.fetchData = getFetchLatestItemsFn(apiClient, user, parent.Id, parent.CollectionType, options);
     itemsContainer.getItemsHtml = getLatestItemsHtmlFn(parent.Type, parent.CollectionType, options);
     itemsContainer.parentContainer = elem;
+    itemsContainer.cacheKey = `home-latest-${parent.Id}-${apiClient.getCurrentUserId()}`;
 }
 
 export function loadRecentlyAdded(

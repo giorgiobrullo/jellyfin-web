@@ -110,4 +110,5 @@ export function loadResume(
     itemsContainer.fetchData = getItemsToResumeFn(apiClient, mediaType, options);
     itemsContainer.getItemsHtml = getItemsToResumeHtmlFn(userSettings.useEpisodeImagesInNextUpAndResume(), mediaType, options);
     itemsContainer.parentContainer = elem;
+    itemsContainer.cacheKey = `home-resume-${mediaType}-${apiClient.getCurrentUserId()}`;
 }

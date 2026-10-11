@@ -131,6 +131,28 @@ function prefetchMenu(e) {
 }
 
 document.addEventListener('pointerover', prefetchMenu, { passive: true });
+
+// Pressing the mouse on a card starts the request for its item: the details page that the click
+// opens a moment later asks for it again and shares the request in flight (see createApiClient)
+// instead of starting it ~100-200 ms later. Mouse only: on touch a press is often a scroll.
+function prefetchOnPress(e) {
+    if (e.pointerType !== 'mouse' || e.button !== 0) {
+        return;
+    }
+    const target = e.target;
+    if (target?.closest?.('[data-action]:not([data-action="link"])')) {
+        return;
+    }
+    const card = target?.closest?.('.card[data-id], .listItem[data-id]');
+    const type = card?.getAttribute('data-type');
+    if (!card || !type || type === 'Timer' || type === 'SeriesTimer' || type === 'Program') {
+        return;
+    }
+    const apiClient = ServerConnections.getApiClient(card.getAttribute('data-serverid'));
+    apiClient?.getItem(apiClient.getCurrentUserId(), card.getAttribute('data-id')).catch(() => { /* the page asks again */ });
+}
+
+document.addEventListener('pointerdown', prefetchOnPress, { passive: true });
 document.addEventListener('focusin', prefetchMenu, { passive: true });
 
 function notifyRefreshNeeded(childElement, itemsContainer) {

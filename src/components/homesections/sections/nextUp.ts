@@ -118,4 +118,5 @@ export function loadNextUp(
     itemsContainer.fetchData = getNextUpFetchFn(apiClient, userSettings, options);
     itemsContainer.getItemsHtml = getNextUpItemsHtmlFn(userSettings.useEpisodeImagesInNextUpAndResume(), options);
     itemsContainer.parentContainer = elem;
+    itemsContainer.cacheKey = `home-nextup-${apiClient.getCurrentUserId()}`;
 }

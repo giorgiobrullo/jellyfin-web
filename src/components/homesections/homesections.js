@@ -55,12 +55,44 @@ function getAllSectionsToShow(userSettings) {
     return sections;
 }
 
+// The libraries the sections are built from, kept in the browser: the home screen's rows are laid
+// out at once (each then shows its own cached items) instead of after the request for them.
+const USER_VIEWS_CACHE_PREFIX = 'homesections-views-';
+
+function readCachedUserViews(userId) {
+    try {
+        const views = JSON.parse(localStorage.getItem(USER_VIEWS_CACHE_PREFIX + userId) || 'null');
+        return Array.isArray(views) && views.length ? views : null;
+    } catch {
+        return null;
+    }
+}
+
+function getUserViews(api, userId) {
+    const fresh = queryClient
+        .fetchQuery(getUserViewsQuery(api, { userId }))
+        .then(result => result.Items || [])
+        .then(views => {
+            try {
+                localStorage.setItem(USER_VIEWS_CACHE_PREFIX + userId, JSON.stringify(views));
+            } catch {
+                // Storage full or blocked.
+            }
+            return views;
+        });
+    const cached = readCachedUserViews(userId);
+    if (!cached) {
+        return fresh;
+    }
+    // A changed library list shows from the next load on.
+    fresh.catch(() => { /* the cached list stands */ });
+    return Promise.resolve(cached);
+}
+
 export function loadSections(elem, apiClient, user, userSettings) {
     const api = ServerConnections.getApi(apiClient.serverId());
     const userId = user.Id || apiClient.getCurrentUserId();
-    return queryClient
-        .fetchQuery(getUserViewsQuery(api, { userId }))
-        .then(result => result.Items || [])
+    return getUserViews(api, userId)
         .then(function (userViews) {
             let html = '';
 

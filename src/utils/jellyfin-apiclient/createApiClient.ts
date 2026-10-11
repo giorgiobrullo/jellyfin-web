@@ -13,7 +13,7 @@ const encodeParam = (value: string) => encodeURIComponent(safeDecodeURIComponent
 // Jellyfin Enhanced): calls for the same item this close together share one request, each caller
 // getting its own copy. Short enough that a poll (the loading version picker asks every second)
 // still sees fresh data.
-const SHARED_ITEM_WINDOW_MS = 500;
+const SHARED_ITEM_WINDOW_MS = 800;
 
 function shareItemRequests(apiClient: ApiClient) {
     const getItem = apiClient.getItem.bind(apiClient);

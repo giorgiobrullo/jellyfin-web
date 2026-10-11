@@ -369,8 +369,50 @@ ItemsContainerPrototype.refreshItems = function () {
 
     this.needsRefresh = false;
 
-    return this.fetchData().then(onDataFetched.bind(this));
+    // A row with a cache key (the home screen's) first shows what it showed last time, then the
+    // server's answer when that differs: the home screen is there before its requests come back.
+    const cacheKey = this.cacheKey;
+    if (cacheKey && this.cachedJson === undefined) {
+        this.cachedJson = readCachedRow(cacheKey);
+        if (this.cachedJson) {
+            try {
+                onDataFetched.call(this, JSON.parse(this.cachedJson));
+            } catch (err) {
+                console.warn('[ItemsContainer] could not show the cached row', err);
+            }
+        }
+    }
+
+    return this.fetchData().then(result => {
+        if (cacheKey) {
+            const json = JSON.stringify(result);
+            if (json === this.cachedJson) {
+                return;
+            }
+            this.cachedJson = json;
+            saveCachedRow(cacheKey, json);
+        }
+        onDataFetched.call(this, result);
+    });
 };
+
+const ROW_CACHE_PREFIX = 'rowcache-';
+
+function readCachedRow(key) {
+    try {
+        return localStorage.getItem(ROW_CACHE_PREFIX + key) || null;
+    } catch {
+        return null;
+    }
+}
+
+function saveCachedRow(key, json) {
+    try {
+        localStorage.setItem(ROW_CACHE_PREFIX + key, json);
+    } catch {
+        // Storage full or blocked: the row just loads as before next time.
+    }
+}
 
 ItemsContainerPrototype.notifyRefreshNeeded = function (isInForeground) {
     if (this.paused) {

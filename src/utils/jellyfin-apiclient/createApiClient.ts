@@ -36,6 +36,23 @@ function shareItemRequests(apiClient: ApiClient) {
         return entry.promise.then(item => JSON.parse(JSON.stringify(item)));
     };
 
+    // Several parts of the app ask for the signed-in user at start-up, before the first answer is
+    // cached: they share the request in flight.
+    const getCurrentUser = apiClient.getCurrentUser.bind(apiClient);
+    let currentUserInFlight: ReturnType<typeof getCurrentUser> | null = null;
+    apiClient.getCurrentUser = (enableCache?: boolean) => {
+        if (currentUserInFlight) {
+            return currentUserInFlight;
+        }
+        const promise = getCurrentUser(enableCache);
+        currentUserInFlight = promise;
+        const clear = () => {
+            if (currentUserInFlight === promise) currentUserInFlight = null;
+        };
+        promise.then(clear, clear);
+        return promise;
+    };
+
     return apiClient;
 }
 

@@ -534,6 +534,16 @@ export default class ConnectionManager {
             return new Promise((resolve) => {
                 options = options || {};
 
+                // With a saved sign-in, its check (/System/Info) starts alongside the server's
+                // discovery (/System/Info/Public) at the address used last time, instead of after it:
+                // one round trip less before the app starts.
+                if (server.AccessToken && options.enableAutoLogin !== false) {
+                    const url = getServerAddress(server);
+                    if (url) {
+                        options = { ...options, earlyAuthentication: { url, promise: validateAuthentication(server, url) } };
+                    }
+                }
+
                 tryReconnect(server).then(
                     (result) => {
                         const serverUrl = result.url;
@@ -573,7 +583,9 @@ export default class ConnectionManager {
                 server.UserId = null;
                 server.AccessToken = null;
             } else if (server.AccessToken && verifyLocalAuthentication) {
-                void validateAuthentication(server, serverUrl).then(function () {
+                const early = options.earlyAuthentication;
+                const check = early?.url === serverUrl ? early.promise : validateAuthentication(server, serverUrl);
+                void check.then(function () {
                     onSuccessfulConnection(server, systemInfo, connectionMode, serverUrl, false, resolve, options);
                 });
                 return;

@@ -67,6 +67,7 @@ export class UserSettings {
     setUserInfo(userId, apiClient) {
         if (this.saveTimeout) {
             clearTimeout(this.saveTimeout);
+            this.saveTimeout = null;
         }
 
         this.currentUserId = userId;
@@ -80,7 +81,8 @@ export class UserSettings {
         const self = this;
 
         const api = ServerConnections.getApi(apiClient.serverId());
-        return queryClient
+        const cacheKey = `displayprefs-${apiClient.serverId()}-${userId}`;
+        const fresh = queryClient
             .fetchQuery(getDisplayPreferencesQuery(
                 api,
                 {
@@ -91,8 +93,32 @@ export class UserSettings {
             ))
             .then(result => {
                 result.CustomPrefs = result.CustomPrefs || {};
-                self.displayPrefs = result;
+                try {
+                    localStorage.setItem(cacheKey, JSON.stringify(result));
+                } catch {
+                    // Storage full or blocked.
+                }
+                // Not over a change made meanwhile that is still to be saved.
+                if (self.currentUserId === userId && !self.saveTimeout) {
+                    self.displayPrefs = result;
+                }
             });
+
+        // The preferences saved last time let the app start (the home screen's sections are laid
+        // out from them) without waiting for the server's copy, which replaces them when it comes.
+        let cached = null;
+        try {
+            cached = JSON.parse(localStorage.getItem(cacheKey) || 'null');
+        } catch {
+            cached = null;
+        }
+        if (cached?.CustomPrefs) {
+            this.displayPrefs = cached;
+            fresh.catch(err => console.warn('[UserSettings] could not refresh the display preferences', err));
+            return Promise.resolve();
+        }
+
+        return fresh;
     }
 
     // FIXME: 'appSettings.set' doesn't return any value

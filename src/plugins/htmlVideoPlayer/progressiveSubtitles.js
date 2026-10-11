@@ -22,6 +22,8 @@ const RETRY_DELAY_MS = 2000;
 const START_MARGIN_TICKS = 5 * TICKS_PER_SECOND;
 // A seek this far past what the current read has reached starts a new read from there.
 const SEEK_AHEAD_TICKS = 30 * TICKS_PER_SECOND;
+// Scrubbing fires a seek for every position passed over: start a read once it settles.
+const SEEK_SETTLE_MS = 150;
 
 const ASS_CODECS = ['ass', 'ssa'];
 // Text tracks the server converts to ASS events on the way.
@@ -140,6 +142,8 @@ export class ProgressiveSubtitleTrack {
     #onEvents;
     #onComplete;
     #onSeeked = null;
+    #seekTimer = null;
+    #restartTicks = null;
 
     #header = '';
     #seen = new Set();
@@ -207,7 +211,13 @@ export class ProgressiveSubtitleTrack {
         }
 
         this.#attached = true;
-        this.#onSeeked = () => this.#handleSeek();
+        // On seeking, not seeked: the video's seek of a remote source takes a second or two, and
+        // the read can run meanwhile instead of after it. seeked still checks, in case.
+        this.#onSeeked = () => {
+            clearTimeout(this.#seekTimer);
+            this.#seekTimer = setTimeout(() => this.#handleSeek(), SEEK_SETTLE_MS);
+        };
+        this.#videoElement.addEventListener('seeking', this.#onSeeked);
         this.#videoElement.addEventListener('seeked', this.#onSeeked);
         this.#poll(this.#generation);
     }
@@ -221,7 +231,9 @@ export class ProgressiveSubtitleTrack {
     dispose() {
         this.#disposed = true;
         this.#generation++;
+        clearTimeout(this.#seekTimer);
         if (this.#onSeeked) {
+            this.#videoElement.removeEventListener('seeking', this.#onSeeked);
             this.#videoElement.removeEventListener('seeked', this.#onSeeked);
             this.#onSeeked = null;
         }
@@ -316,6 +328,11 @@ export class ProgressiveSubtitleTrack {
         }
 
         const position = this.#getPositionTicks();
+        // A read for about this position is already starting (seeking, then seeked).
+        if (this.#restartTicks !== null && Math.abs(position - this.#restartTicks) < SEEK_AHEAD_TICKS) {
+            return;
+        }
+
         const beforeRead = position < this.#startTicks;
         const pastRead = !this.#complete && position > this.#coveredTicks + SEEK_AHEAD_TICKS;
         if (beforeRead || pastRead) {
@@ -325,7 +342,11 @@ export class ProgressiveSubtitleTrack {
 
     async #restart(positionTicks) {
         const generation = ++this.#generation;
+        this.#restartTicks = positionTicks;
         const reply = await this.#request(Math.max(0, positionTicks - START_MARGIN_TICKS), null, 0, FIRST_WAIT_MS);
+        if (generation === this.#generation) {
+            this.#restartTicks = null;
+        }
         if (this.#disposed || generation !== this.#generation || !reply || reply.Failed) {
             return;
         }

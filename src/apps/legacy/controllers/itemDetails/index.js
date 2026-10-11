@@ -429,7 +429,8 @@ function reloadPlayButtons(page, item) {
         hideAll(page, 'btnReplay');
         hideAll(page, 'btnInstantMix');
         hideAll(page, 'btnShuffle');
-    } else if (playbackManager.canPlay(item)) {
+    } else if (playbackManager.canPlay(item) || (item.MediaType === 'Video' && hasPendingVersions(item))) {
+        // A title whose versions are still being fetched plays too: playback waits for them.
         hideAll(page, 'btnPlay', true);
         const enableInstantMix = ['Audio', 'MusicAlbum', 'MusicGenre', 'MusicArtist'].indexOf(item.Type) !== -1;
         hideAll(page, 'btnInstantMix', enableInstantMix);
@@ -2055,7 +2056,8 @@ export default function (view, params) {
         const audioStreamIndex = view.querySelector('.selectAudio').value || null;
         return {
             startPositionTicks: startPosition,
-            mediaSourceId: view.querySelector('.selectSource').value,
+            // Empty while the versions load: the server picks the first one.
+            mediaSourceId: view.querySelector('.selectSource').value || null,
             audioStreamIndex: audioStreamIndex,
             subtitleStreamIndex: view.querySelector('.selectSubtitles').value
         };

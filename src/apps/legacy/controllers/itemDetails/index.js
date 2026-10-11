@@ -254,7 +254,9 @@ function renderTrackSelections(page, instance, item, forceReload) {
     const select = page.querySelector('.selectSource');
     const sourceContainer = page.querySelector('.selectSourceContainer');
 
-    if (item.MediaSources && hasPendingVersions(item) && itemHelper.supportsMediaSourceSelection(item)) {
+    // Not itemHelper.supportsMediaSourceSelection: it turns down an item whose only source is a
+    // placeholder, which is just what a title still being fetched has.
+    if (item.MediaType === 'Video' && hasPendingVersions(item)) {
         page.querySelector('.trackSelections').classList.remove('hide');
         select.setLabel(globalize.translate('LabelVersion'));
         select.innerHTML = '<option value="">' + escapeHtml(globalize.translate('LoadingVersions')) + '</option>';

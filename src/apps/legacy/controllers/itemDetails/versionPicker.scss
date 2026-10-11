@@ -1,0 +1,331 @@
+// Version picker (versionPicker.js): AnimeBytes-style rows, pipe-separated properties.
+
+.selectSourceContainer.versionPickerActive {
+    flex-basis: 100%;
+    max-width: 100%;
+
+    .selectSource,
+    .selectArrowContainer {
+        display: none;
+    }
+}
+
+.versionPicker {
+    position: relative;
+    width: 100%;
+    font-size: 0.86em;
+}
+
+.versionPickerCurrent,
+.versionPickerRow {
+    display: flex;
+    align-items: center;
+    gap: 0.8em;
+    width: 100%;
+    margin: 0;
+    padding: 0.55em 0.8em;
+    border: 0;
+    color: inherit;
+    font: inherit;
+    text-align: start;
+    background: transparent;
+    cursor: pointer;
+}
+
+.versionPickerCurrent {
+    border-radius: 0.3em;
+    background: rgba(128, 128, 128, 0.16);
+
+    &:hover,
+    &:focus-visible {
+        background: rgba(128, 128, 128, 0.26);
+    }
+}
+
+.versionPickerLine {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}
+
+.vpTok {
+    white-space: nowrap;
+}
+
+// Colours by kind and value, AnimeBytes/nyaa style.
+// The release group leads the line, as in nyaa's titles.
+.vpTok-group {
+    font-weight: 700;
+    color: #f5f5f5;
+}
+
+.vpTok-res {
+    font-weight: 700;
+    color: #9e9e9e;
+}
+
+.vpTok-res-2160p { color: #ce93d8; }
+.vpTok-res-1440p { color: #9fa8da; }
+.vpTok-res-1080p { color: #4db6ac; }
+.vpTok-res-720p { color: #aed581; }
+
+.vpTok-type {
+    font-weight: 600;
+    color: #bdbdbd;
+}
+
+.vpTok-type-remux { color: #ff8a65; }
+.vpTok-type-bluray { color: #64b5f6; }
+.vpTok-type-webdl { color: #81c784; }
+.vpTok-type-webrip { color: #aed581; }
+.vpTok-type-hdtv { color: #b0bec5; }
+.vpTok-type-dvd { color: #bcaaa4; }
+
+.vpTok-container {
+    opacity: 0.55;
+}
+
+.vpTok-codec { color: #b0bec5; }
+.vpTok-codec-hevc { color: #ffb74d; }
+.vpTok-codec-av1 { color: #4dd0e1; }
+
+.vpTok-hdr-hdr { color: #ffd54f; }
+
+.vpTok-hdr-dv {
+    font-weight: 600;
+    color: #ea80fc;
+}
+
+.vpTok-audio-lossless { color: #69f0ae; }
+.vpTok-audio-lossy { color: #81d4fa; }
+
+.vpTok-lang { color: #e0e0e0; }
+
+.vpTok-lang-dual { color: #f48fb1; }
+
+.vpTok-subs { color: #90a4ae; }
+
+.vpTok-subs-none {
+    opacity: 0.55;
+}
+
+.vpTok[title] {
+    cursor: help;
+}
+
+.vpTok-seadex {
+    padding: 0.05em 0.45em;
+    border-radius: 0.25em;
+    font-weight: 700;
+    font-size: 0.9em;
+}
+
+.vpTok-seadex-best {
+    color: #1a1a1a;
+    background: #ffca28;
+}
+
+.vpTok-seadex-alt {
+    color: #e3f2fd;
+    background: rgba(66, 165, 245, 0.45);
+}
+
+.versionPickerSep {
+    margin: 0 0.15em;
+    opacity: 0.35;
+}
+
+.versionPickerMeta {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    gap: 0.7em;
+    white-space: nowrap;
+}
+
+.versionPickerSize {
+    font-weight: 600;
+}
+
+.versionPickerDim,
+.versionPickerCount {
+    opacity: 0.6;
+}
+
+.versionPickerCount {
+    min-width: 1.6em;
+    padding: 0.05em 0.45em;
+    border-radius: 1em;
+    background: rgba(128, 128, 128, 0.22);
+    text-align: center;
+}
+
+.versionPickerStars {
+    color: #e5b33b;
+    letter-spacing: -0.08em;
+}
+
+.versionPickerCached {
+    color: #f5c518;
+}
+
+.versionPickerWarn {
+    color: #ff9800;
+}
+
+.versionPickerChevron {
+    transition: transform 0.15s ease;
+}
+
+.versionPickerPanel {
+    display: none;
+    position: absolute;
+    z-index: 10;
+    top: calc(100% + 0.3em);
+    inset-inline: 0;
+    max-height: min(60vh, 32em);
+    overflow-y: auto;
+    overscroll-behavior: contain;
+    border-radius: 0.3em;
+    background: var(--jf-palette-background-paper, #202020);
+    box-shadow: 0 0.4em 1.6em rgba(0, 0, 0, 0.5);
+
+    // A thin scrollbar over the panel, in the theme's text colour.
+    scrollbar-width: thin;
+    scrollbar-color: rgba(255, 255, 255, 0.22) transparent;
+
+    &::-webkit-scrollbar {
+        width: 0.5em;
+    }
+
+    &::-webkit-scrollbar-track {
+        background: transparent;
+    }
+
+    &::-webkit-scrollbar-thumb {
+        border: 0.15em solid transparent;
+        border-radius: 1em;
+        background: rgba(255, 255, 255, 0.22) padding-box;
+
+        &:hover {
+            background-color: rgba(255, 255, 255, 0.4);
+        }
+    }
+}
+
+.versionPickerOpen {
+    .versionPickerPanel {
+        display: block;
+    }
+
+    .versionPickerChevron {
+        transform: rotate(180deg);
+    }
+}
+
+.versionPickerGroup {
+    position: sticky;
+    // Above the rows: their dimmed tokens are layers of their own.
+    z-index: 1;
+    top: 0;
+    padding: 0.45em 0.8em;
+    font-weight: 600;
+    background: var(--jf-palette-background-paper, #202020);
+    border-bottom: 1px solid rgba(128, 128, 128, 0.25);
+}
+
+.versionPickerRow {
+    border-bottom: 1px solid rgba(128, 128, 128, 0.08);
+
+    &:nth-of-type(even) {
+        background: rgba(128, 128, 128, 0.06);
+    }
+
+    &:hover,
+    &:focus-visible {
+        background: rgba(128, 128, 128, 0.2);
+    }
+}
+
+.versionPickerSelected {
+    box-shadow: inset 0.2em 0 0 var(--jf-palette-primary-main, #00a4dc);
+    background: rgba(0, 164, 220, 0.12);
+}
+
+.versionPickerLoading .versionPickerCurrent {
+    cursor: progress;
+}
+
+.versionPickerSkeletonLine {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.45em 0.6em;
+
+    // A line of text's height, like the version's line.
+    &::before {
+        content: '\200b';
+    }
+}
+
+.versionPickerSkeleton {
+    display: inline-block;
+    flex: 0 1 auto;
+    height: 0.8em;
+    margin: 0.2em 0;
+    border-radius: 0.4em;
+    // Fixed to the viewport: one sweep goes over all the pills together.
+    background-image: linear-gradient(90deg, rgba(128, 128, 128, 0.14) 40%, rgba(128, 128, 128, 0.32) 50%, rgba(128, 128, 128, 0.14) 60%);
+    background-attachment: fixed;
+    background-size: 200vw 100%;
+    animation: versionPickerShimmer 1.6s linear infinite;
+}
+
+.versionPickerSpinner {
+    flex: 0 0 auto;
+    width: 1em;
+    height: 1em;
+    border: 0.15em solid rgba(128, 128, 128, 0.3);
+    border-top-color: var(--jf-palette-primary-main, #00a4dc);
+    border-radius: 50%;
+    animation: versionPickerSpin 0.8s linear infinite;
+}
+
+@keyframes versionPickerShimmer {
+    from { background-position: 100vw 0; }
+    to { background-position: -100vw 0; }
+}
+
+@keyframes versionPickerSpin {
+    to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .versionPickerSkeleton,
+    .versionPickerSpinner {
+        animation: none;
+    }
+}
+
+@media (max-width: 50em) {
+    .versionPickerCurrent,
+    .versionPickerRow {
+        flex-wrap: wrap;
+        gap: 0.3em 0.8em;
+        min-width: 0;
+    }
+
+    .versionPickerLine {
+        flex-basis: 100%;
+        white-space: normal;
+    }
+
+    .versionPickerMeta {
+        flex: 1 1 auto;
+        flex-wrap: wrap;
+        min-width: 0;
+        gap: 0.2em 0.7em;
+    }
+}

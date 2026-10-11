@@ -34,6 +34,7 @@ import browser from 'scripts/browser';
 import datetime from 'scripts/datetime';
 import dom from 'utils/dom';
 import { renderComponent } from 'utils/reactUtils';
+import { removeVersionPicker, renderVersionPicker } from './versionPicker';
 import { download } from 'scripts/fileDownloader';
 import libraryMenu from 'scripts/libraryMenu';
 import * as userSettings from 'scripts/settings/userSettings';
@@ -259,7 +260,11 @@ function renderTrackSelections(page, instance, item, forceReload) {
         select.innerHTML = '<option value="">' + escapeHtml(globalize.translate('LoadingVersions')) + '</option>';
         select.disabled = true;
         sourceContainer.classList.remove('hide');
-        sourceContainer.classList.add('selectSourceLoading');
+        if (layoutManager.tv) {
+            sourceContainer.classList.add('selectSourceLoading');
+        } else {
+            renderVersionPicker(sourceContainer, select, null);
+        }
         page.querySelector('.selectVideo').innerHTML = '';
         page.querySelector('.selectAudio').innerHTML = '';
         page.querySelector('.selectSubtitles').innerHTML = '';
@@ -297,6 +302,14 @@ function renderTrackSelections(page, instance, item, forceReload) {
         page.querySelector('.selectSourceContainer').classList.remove('hide');
     } else {
         page.querySelector('.selectSourceContainer').classList.add('hide');
+    }
+
+    // Many versions (Gelato's streams) are hard to tell apart in a plain select: the picker lists
+    // their properties. TV layouts keep the select, which the remote's focus handling knows.
+    if (mediaSources.length > 1 && !layoutManager.tv) {
+        renderVersionPicker(sourceContainer, select, mediaSources, instance.currentUser);
+    } else {
+        removeVersionPicker(sourceContainer);
     }
 
     if (select.value !== currentValue || forceReload) {
@@ -629,6 +642,9 @@ function reloadFromItem(instance, page, params, item, user) {
 
     libraryMenu.setTitle('');
     unmount(instance);
+
+    // For the version picker's languages.
+    instance.currentUser = user;
 
     // Start rendering the artwork first
     renderImage(page, item, apiClient);

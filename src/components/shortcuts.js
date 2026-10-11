@@ -180,6 +180,7 @@ function prefetchOnHover(e) {
         if (hoverCard !== card || !card.isConnected) {
             return;
         }
+        preloadDetailsPage();
         const apiClient = ServerConnections.getApiClient(card.getAttribute('data-serverid'));
         apiClient?.prefetchItem(apiClient.getCurrentUserId(), card.getAttribute('data-id'))
             .then(item => {
@@ -187,6 +188,21 @@ function prefetchOnHover(e) {
             })
             .catch(() => { /* the page asks again */ });
     }, HOVER_PREFETCH_DELAY_MS);
+}
+
+let detailsPagePreloaded = false;
+
+function preloadDetailsPage() {
+    if (detailsPagePreloaded) {
+        return;
+    }
+    detailsPagePreloaded = true;
+    // The route's controller and view (legacyRoutes/user.ts).
+    import('./viewManager/ViewManagerPage').then(({ preloadLegacyView }) => {
+        preloadLegacyView('itemDetails/index', 'itemDetails/index.html');
+    }).catch(() => {
+        detailsPagePreloaded = false;
+    });
 }
 
 // The logo and the backdrop the details page shows first, with the URLs it builds for them

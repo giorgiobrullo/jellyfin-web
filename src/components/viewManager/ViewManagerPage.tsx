@@ -60,6 +60,15 @@ const importController = (
     }
 };
 
+/**
+ * Loads a legacy page's code and template ahead of its navigation (a card the pointer rests on):
+ * webpack keeps them, and the page opens without waiting for its chunks. One of them, the
+ * template's, is served no-cache (File Transformation), so even a cached one costs a round trip.
+ */
+export const preloadLegacyView = (controller: string, view: string) => {
+    importController(AppType.Legacy, controller, view).catch(() => { /* loaded again on navigation */ });
+};
+
 const loadView = async (
     appType: AppType,
     controller: string,

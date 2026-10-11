@@ -107,9 +107,9 @@ class CastPlayer {
         }
 
         const apiClient = ServerConnections.currentApiClient();
-        const userId = apiClient.getCurrentUserId();
 
-        apiClient.getUser(userId).then(user => {
+        // The signed-in user, shared with the rest of the app's start-up instead of a request of its own.
+        apiClient.getCurrentUser().then(user => {
             const applicationID = user.Configuration.CastReceiverId;
             if (!applicationID) {
                 console.warn(`Not initializing chromecast: CastReceiverId is ${applicationID}`);

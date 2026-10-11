@@ -723,6 +723,16 @@ function setTabs (type, selectedIndex, builder) {
  * @param {import('jellyfin-apiclient').ApiClient} [_apiClient] The current api client.
  */
 const fetchServerName = (_apiClient) => {
+    // The name saved by the last connection (every connection refreshes it): no request of its
+    // own to /System/Info/Public at start-up, alongside the connection's.
+    const savedName = _apiClient && ServerConnections.getSavedServers?.()
+        .find(server => server.Id === _apiClient.serverId())?.Name;
+    if (savedName) {
+        documentTitle = savedName;
+        document.title = documentTitle;
+        return;
+    }
+
     _apiClient
         ?.getPublicSystemInfo()
         .then(({ ServerName }) => {

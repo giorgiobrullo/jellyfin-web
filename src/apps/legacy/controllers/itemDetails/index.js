@@ -197,8 +197,9 @@ function renderSeriesTimerEditor(page, item, apiClient, user) {
 
 // Gelato answers a page of a title whose streams are still being fetched (5-12 s for one nobody
 // opened) with placeholder sources instead of making the page wait: the picker shows it is
-// loading and the item is asked for again until the versions are there.
-const PENDING_VERSIONS_POLL_MS = 1000;
+// loading and the item is asked for again until the versions are there. Often enough that the
+// versions show up soon after they arrive: each check is a light request.
+const PENDING_VERSIONS_POLL_MS = 400;
 const PENDING_VERSIONS_LIMIT_MS = 30000;
 
 function hasPendingVersions(item) {

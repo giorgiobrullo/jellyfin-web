@@ -11,9 +11,9 @@ const encodeParam = (value: string) => encodeURIComponent(safeDecodeURIComponent
 
 // An item page asks for its item from several places at once (the page itself, plugins such as
 // Jellyfin Enhanced): calls for the same item this close together share one request, each caller
-// getting its own copy. Short enough that a poll (the loading version picker asks every second)
+// getting its own copy. Short enough that a poll (the loading version picker asks every 400 ms)
 // still sees fresh data.
-const SHARED_ITEM_WINDOW_MS = 800;
+const SHARED_ITEM_WINDOW_MS = 300;
 
 // An item asked for ahead of its page (the pointer resting on its card): the page's own request
 // takes it, once, instead of waiting for the server. Dropped after a while, and on any change

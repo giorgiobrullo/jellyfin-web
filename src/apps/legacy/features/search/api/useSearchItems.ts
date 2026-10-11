@@ -2,6 +2,7 @@ import { BaseItemKind } from '@jellyfin/sdk/lib/generated-client/models/base-ite
 import type { BaseItemDto } from '@jellyfin/sdk/lib/generated-client/models/base-item-dto';
 import { CollectionType } from '@jellyfin/sdk/lib/generated-client/models/collection-type';
 import { useQuery } from '@tanstack/react-query';
+import { useMemo } from 'react';
 import { CardShape } from 'components/cardbuilder/utils/shape';
 import { useApi } from '../../../../../hooks/useApi';
 import { addSection, getCardOptionsFromType, getItemTypesFromCollectionType, getTitleFromType, isLivetv, isMovies, isMusic, isTVShows, sortSections } from '../utils/search';
@@ -36,73 +37,87 @@ export const useSearchItems = (
     const isProgramsEnabled = !isProgramsPending || collectionType;
     const isLiveTvEnabled = !isLiveTvPending || !collectionType || !isLivetv(collectionType);
 
-    return useQuery({
-        queryKey: ['Search', 'Items', collectionType, parentId, searchTerm],
-        queryFn: async ({ signal }) => {
-            if (liveTvSections && collectionType && isLivetv(collectionType)) {
-                return sortSections(liveTvSections);
-            }
+    const itemTypes: BaseItemKind[] = getItemTypesFromCollectionType(collectionType);
+    const isMissing = itemTypes.includes(BaseItemKind.Episode) && !user?.Configuration?.DisplayMissingEpisodes ? false : undefined;
+    const isLiveTvOnly = !!collectionType && isLivetv(collectionType);
 
-            const sections: Section[] = [];
-
-            addSection(sections, 'Artists', artists?.Items, {
-                coverImage: true
-            });
-
-            addSection(sections, 'Programs', programs?.Items, {
-                ...LIVETV_CARD_OPTIONS
-            });
-
-            addSection(sections, 'People', people?.Items, {
-                coverImage: true
-            });
-
-            addSection(sections, 'Studios', studios?.Items, {
-                shape: CardShape.SquareOverflow
-            });
-
-            addSection(sections, 'HeaderVideos', videos?.Items, {
-                showParentTitle: true
-            });
-
-            const itemTypes: BaseItemKind[] = getItemTypesFromCollectionType(collectionType);
-
-            const searchData = await fetchItemsByType(
-                api!,
-                userId,
-                {
-                    includeItemTypes: itemTypes,
-                    parentId,
-                    searchTerm,
-                    isMissing: itemTypes.includes(BaseItemKind.Episode) && !user?.Configuration?.DisplayMissingEpisodes ? false : undefined,
-                    limit: 800
-                },
-                { signal }
-            );
-
-            if (searchData.Items) {
-                for (const itemType of itemTypes) {
-                    const items: BaseItemDto[] = [];
-                    for (const searchItem of searchData.Items) {
-                        if (searchItem.Type === itemType) {
-                            items.push(searchItem);
-                        }
-                    }
-                    addSection(sections, getTitleFromType(itemType), items, getCardOptionsFromType(itemType));
-                }
-            }
-
-            return sortSections(sections);
-        },
-        enabled: (
-            !!api
-            && !!userId
-            && !!isArtistsEnabled
-            && !!isPeopleEnabled
-            && !!isStudiosEnabled
-            && !!isVideosEnabled
-            && !!isLiveTvEnabled
-            && !!isProgramsEnabled
-        )
+    // The items themselves, asked for alongside the other searches rather than after them all:
+    // with Gelato this is the slowest of them (the addons' catalogs), so waiting for the others
+    // first only added their time to it.
+    const { data: searchData, isPending: isItemsPending } = useQuery({
+        queryKey: ['Search', 'ItemsByType', collectionType, parentId, searchTerm, isMissing],
+        queryFn: ({ signal }) => fetchItemsByType(
+            api!,
+            userId,
+            {
+                includeItemTypes: itemTypes,
+                parentId,
+                searchTerm,
+                isMissing,
+                limit: 800
+            },
+            { signal }
+        ),
+        enabled: !!api && !!userId && !isLiveTvOnly
     });
+
+    const isPending = !(
+        !!api
+        && !!userId
+        && !!isArtistsEnabled
+        && !!isPeopleEnabled
+        && !!isStudiosEnabled
+        && !!isVideosEnabled
+        && !!isLiveTvEnabled
+        && !!isProgramsEnabled
+        && (isLiveTvOnly || !isItemsPending)
+    );
+
+    const data = useMemo(() => {
+        if (isPending) {
+            return undefined;
+        }
+
+        if (liveTvSections && isLiveTvOnly) {
+            return sortSections(liveTvSections);
+        }
+
+        const sections: Section[] = [];
+
+        addSection(sections, 'Artists', artists?.Items, {
+            coverImage: true
+        });
+
+        addSection(sections, 'Programs', programs?.Items, {
+            ...LIVETV_CARD_OPTIONS
+        });
+
+        addSection(sections, 'People', people?.Items, {
+            coverImage: true
+        });
+
+        addSection(sections, 'Studios', studios?.Items, {
+            shape: CardShape.SquareOverflow
+        });
+
+        addSection(sections, 'HeaderVideos', videos?.Items, {
+            showParentTitle: true
+        });
+
+        if (searchData?.Items) {
+            for (const itemType of itemTypes) {
+                const items: BaseItemDto[] = [];
+                for (const searchItem of searchData.Items) {
+                    if (searchItem.Type === itemType) {
+                        items.push(searchItem);
+                    }
+                }
+                addSection(sections, getTitleFromType(itemType), items, getCardOptionsFromType(itemType));
+            }
+        }
+
+        return sortSections(sections);
+    }, [isPending, isLiveTvOnly, liveTvSections, artists, programs, people, studios, videos, searchData, itemTypes]);
+
+    return { data, isPending };
 };

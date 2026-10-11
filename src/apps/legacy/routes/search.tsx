@@ -19,7 +19,9 @@ const Search: FC = () => {
     const parentIdQuery = searchParams.get(PARENT_ID_PARAM) || undefined;
     const collectionTypeQuery = (searchParams.get(COLLECTION_TYPE_PARAM) || undefined) as CollectionType | undefined;
     const [ query, setQuery ] = useSearchParam(QUERY_PARAM);
-    const [debouncedQuery] = useDebounceValue(query, 500);
+    // Long enough to skip the words being typed (keys come ~100-200 ms apart), short enough not to
+    // be felt after the last one.
+    const [debouncedQuery] = useDebounceValue(query, 250);
 
     return (
         <Page

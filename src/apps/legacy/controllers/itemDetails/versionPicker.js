@@ -51,6 +51,9 @@ const INTERFACE_LANGUAGES = {
     ja: 'jpn', ko: 'kor', nb: 'nor', nl: 'nld', no: 'nor', pl: 'pol', pt: 'por', ru: 'rus', sv: 'swe', tr: 'tur', uk: 'ukr', zh: 'zho'
 };
 
+// The addon's audio codec names, best first.
+const NAME_AUDIO_RANKING = ['TrueHD', 'DTS:X', 'DTS-HD MA', 'DTS-HD', 'FLAC', 'PCM', 'DD+', 'DTS', 'DD', 'OPUS', 'AAC', 'MP3'];
+
 const SMALL_CAPS = 'ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘǫʀsᴛᴜᴠᴡxʏᴢ';
 
 let hevcSupport;
@@ -86,9 +89,9 @@ function formatSize(bytes) {
     return `${gb.toFixed(digits)} GB`;
 }
 
-// Not probed: the addon's name has "❖ 2.5 / 62.9 GB · …", the file then the whole pack.
+// Not probed: the addon's name has "◈ 2.5 GB · …", or "❖ 2.5 / 62.9 GB · …" for a file in a pack.
 function sizeFromName(name) {
-    const sizes = (/❖([^\n·]+)/.exec(name)?.[1] || '').trim();
+    const sizes = (/[❖◈]([^\n·]+)/.exec(name)?.[1] || '').trim();
     const unit = sizes.slice(-2);
     const file = sizes.split('/')[0].trim();
     if (unit !== 'GB' && unit !== 'MB') {
@@ -189,25 +192,40 @@ function bracketed(name) {
     return end > start ? name.slice(start + 1, end) : '';
 }
 
-/**
- * Not probed: the addon's name has the languages it matched, "✓ ᴇɴ · ᴊᴀ · sᴜʙ (ᴇɴ) » …", as
- * streams to describe in their place.
- */
-function streamsFromName(name) {
-    const line = (/✓([^\n»]+)/.exec(name)?.[1] || '').trim();
-    const plain = [...line].map(c => {
+// A language of the addon's name, "ᴇɴ" or with a superscript tag, "ᴇɴᶠᵒʳᶜᵉᵈ" (forced), as a stream.
+function nameLanguageStream(Type, token) {
+    const plain = [...token.trim()].map(c => {
         const index = SMALL_CAPS.indexOf(c);
         return index < 0 ? c : String.fromCharCode(97 + index);
     }).join('');
-    const toStream = (Type, code) => ({ Type, Language: INTERFACE_LANGUAGES[code.trim()] || code.trim() });
-    const [spoken, subtitles] = plain.split('sub');
+    const code = plain.replace(/[^a-z]/g, '');
+    const tag = plain.slice(code.length);
+    if (code === 'multi' || code === 'duo') {
+        return { Type, Language: '', Multi: code };
+    }
+    return { Type, Language: INTERFACE_LANGUAGES[code] || code, IsForced: tag.startsWith('ᶠ') };
+}
+
+/**
+ * Not probed: the addon's name has the languages, "✓ ᴇɴ · ᴊᴀ · sᴜʙ (ᴇɴ · ᴇɴᶠᵒʳᶜᵉᵈ)" (or "⛿ ᴍᴜʟᴛɪ"
+ * when none is the viewer's), as streams to describe in their place.
+ */
+function streamsFromName(name) {
+    const line = (/[✓⛿]([^\n»]+)/.exec(name)?.[1] || '').trim();
+    const [spoken, subtitles] = line.split('sᴜʙ');
+    const tokens = text => (text || '').replace(/[()]/g, '').split('·').map(t => t.trim()).filter(Boolean);
     return {
-        audios: spoken.split('·').map(c => c.trim()).filter(Boolean).map(c => toStream('Audio', c)),
-        subtitles: (subtitles || '').replace(/[()]/g, '').split('·').filter(c => c.trim()).map(c => toStream('Subtitle', c))
+        audios: tokens(spoken).map(t => nameLanguageStream('Audio', t)),
+        subtitles: tokens(subtitles).map(t => nameLanguageStream('Subtitle', t))
     };
 }
 
 function audioLanguages(audios, relevant, main) {
+    // The addon's name says "multi" or "duo" for the tracks it does not list.
+    const multi = audios.find(a => a.Multi)?.Multi;
+    if (multi) {
+        return { text: multi === 'duo' ? 'Dual Audio' : 'Multi', variant: 'dual' };
+    }
     const languages = languagesOf(audios);
     if (languages.length === 2 && languages.includes('jpn') && languages.includes('eng')) {
         return { text: 'Dual Audio', variant: 'dual', title: 'JPN · ENG' };
@@ -286,8 +304,10 @@ export function describeSource(source, languages = { audio: new Set(), subtitles
         const videoLine = (/▣([^\n]+)/.exec(name)?.[1] || '').split('♬')[0];
         const pieces = videoLine.split(/[✦·]/).map(p => p.trim()).filter(Boolean);
         isHevc = /HEVC|H\.?265|x265/i.test(videoLine);
-        const codecLabel = pieces.shift() || '';
-        add('codec', codecLabel, codecLabel.toLowerCase().replace(/[^a-z0-9]/g, ''));
+        // "HEVC ✧ 10bit": the bit depth follows the codec.
+        const [codecName, depth] = (pieces.shift() || '').split('✧').map(p => p.trim());
+        const codecLabel = depth ? codecName + ' ' + depth.replace('bit', '-bit') : codecName || '';
+        add('codec', codecLabel, (codecName || '').toLowerCase().replace(/[^a-z0-9]/g, ''));
         add('res', resolution, resolution);
         for (const piece of pieces) add('hdr', piece, /(^DV)|(dolby)/i.test(piece) ? 'dv' : 'hdr');
     }
@@ -298,9 +318,15 @@ export function describeSource(source, languages = { audio: new Set(), subtitles
         const lossless = /TrueHD|DTS-HD|DTS:X|FLAC|PCM/.test(label);
         add('audio', label, lossless ? 'lossless' : 'lossy');
     } else {
-        const audioLine = /♬([^\n]+)/.exec(name)?.[1];
-        const label = audioLine ? audioLine.replace(/♯/g, '·').replace(/\s+/g, ' ').trim() : '';
-        add('audio', label, /TrueHD|DTS-HD|FLAC|PCM/.test(label) ? 'lossless' : 'lossy');
+        // "♬ Atmos · DD · TrueHD ♯ 7.1 · 5.1 · 2.0" covers every track: name the best codec and
+        // layout, as for a probed source.
+        const [codecs, layouts] = (/♬([^\n]+)/.exec(name)?.[1] || '').split('♯');
+        const names = (codecs || '').split('·').map(c => c.trim()).filter(Boolean);
+        const best = NAME_AUDIO_RANKING.find(c => names.includes(c)) || names.find(c => c !== 'Atmos') || '';
+        const atmos = best && names.includes('Atmos') ? ' Atmos' : '';
+        const layout = (layouts || '').split('·')[0].trim();
+        const label = best ? [best + atmos, layout].filter(Boolean).join(' ') : '';
+        add('audio', label, /TrueHD|DTS-HD|DTS:X|FLAC|PCM/.test(label) ? 'lossless' : 'lossy');
     }
     const spoken = audioLanguages(audios, languages.audio, defaultAudio && languageOf(defaultAudio));
     add('lang', spoken.text, spoken.variant, spoken.title);

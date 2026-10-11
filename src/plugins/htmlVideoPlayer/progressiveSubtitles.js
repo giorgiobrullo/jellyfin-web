@@ -89,6 +89,47 @@ export function assLineToTrackEvent(line) {
     };
 }
 
+/**
+ * Turns an ASS event line into the event the ASS renderer adds with createEvent.
+ * @param {string} line A `Dialogue:` line.
+ * @param {Map<string, number>} styles The renderer's style indexes by name.
+ * @param {number} readOrder The event's place in the track.
+ * @returns {object | null} The event, with times in milliseconds.
+ */
+export function assLineToRendererEvent(line, styles, readOrder) {
+    if (!line.startsWith('Dialogue:')) {
+        return null;
+    }
+
+    const fields = line.slice('Dialogue:'.length).split(',');
+    if (fields.length < 10) {
+        return null;
+    }
+
+    const start = parseAssTime(fields[1]);
+    const end = parseAssTime(fields[2]);
+    if (Number.isNaN(start) || Number.isNaN(end)) {
+        return null;
+    }
+
+    const styleName = fields[3].trim();
+    const style = styles.get(styleName) ?? styles.get(styleName.replace(/^\*/, '')) ?? styles.get('Default') ?? 0;
+
+    return {
+        Start: Math.round(start * 1000),
+        Duration: Math.max(0, Math.round((end - start) * 1000)),
+        ReadOrder: readOrder,
+        Layer: Number(fields[0].trim()) || 0,
+        Style: style,
+        Name: fields[4],
+        MarginL: Number(fields[5]) || 0,
+        MarginR: Number(fields[6]) || 0,
+        MarginV: Number(fields[7]) || 0,
+        Effect: fields[8],
+        Text: fields.slice(9).join(',')
+    };
+}
+
 export class ProgressiveSubtitleTrack {
     #apiClient;
     #itemId;

@@ -44,7 +44,7 @@ import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/ba
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
 import { isHls } from '../../utils/mediaSource.ts';
-import { assLineToTrackEvent, canStreamProgressively, ProgressiveSubtitleTrack } from './progressiveSubtitles';
+import { assLineToRendererEvent, assLineToTrackEvent, canStreamProgressively, ProgressiveSubtitleTrack } from './progressiveSubtitles';
 
 const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
@@ -167,9 +167,6 @@ function normalizeTrackEventText(text, useHtml) {
         .split('\n').map(val => `\u200E${val}`).join('\n');
     return useHtml ? result.replace(/\n/gi, '<br>') : result;
 }
-
-// How often a progressively read ASS track is handed to the renderer while its events come in.
-const ASS_UPDATE_INTERVAL_MS = 3000;
 
 // A valid ASS track with no events, for a renderer set up before its real track arrives.
 const EMPTY_ASS_TRACK = '[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
@@ -1541,43 +1538,52 @@ export class HtmlVideoPlayer {
 
             // An embedded track of a remote source would be downloaded whole before the first
             // line shows: stream it from the playback position instead (see progressiveSubtitles.js).
+            // The first events set the track; the later ones are added to it one by one
+            // (createEvent), since setting the track again re-parses it and drops what the
+            // renderer has drawn, which shows as a flicker.
             const fullTrackUrl = options.subUrl;
             let renderer = null;
-            let assHeader = '';
-            const assLines = [];
-            let flushTimer = null;
-            let lastFlush = 0;
-            const flush = () => {
-                flushTimer = null;
-                if (renderer && this.#currentAssRenderer === renderer) {
-                    renderer.setTrack(assHeader + assLines.join('\n') + '\n');
-                    lastFlush = Date.now();
+            let styles = null;
+            let queued = [];
+            let readOrder = 0;
+            const addEvents = lines => {
+                if (!renderer || this.#currentAssRenderer !== renderer) {
+                    return;
+                }
+                if (!styles) {
+                    queued.push(...lines);
+                    return;
+                }
+                for (const line of lines) {
+                    const event = assLineToRendererEvent(line, styles, readOrder++);
+                    if (event) {
+                        renderer.createEvent(event);
+                    }
                 }
             };
-            // setTrack() re-parses the track and drops the pre-rendered frames: once every few
-            // seconds while the events come in, not for every batch.
-            const scheduleFlush = force => {
-                if (force) {
-                    clearTimeout(flushTimer);
-                    flush();
-                } else if (!flushTimer) {
-                    flushTimer = setTimeout(flush, Math.max(0, ASS_UPDATE_INTERVAL_MS - (Date.now() - lastFlush)));
-                }
+            const setFirstEvents = (header, lines) => {
+                renderer.setTrack(header + lines.join('\n') + '\n');
+                readOrder = lines.length;
+                // The events name their style; the renderer wants its index.
+                renderer.getStyles(list => {
+                    styles = new Map(list.map(style => [style.Name, style._index]));
+                    const waiting = queued;
+                    queued = [];
+                    addEvents(waiting);
+                }, err => {
+                    console.warn('[ProgressiveSubtitles] could not read the styles', err);
+                    styles = new Map();
+                    addEvents(queued.splice(0));
+                });
             };
             const progressive = canStreamProgressively(track, mediaSource) ?
                 this.#newProgressiveTrack(videoElement, track, item, {
-                    onEvents: (lines, header) => {
-                        assHeader = header;
-                        assLines.push(...lines);
-                        scheduleFlush(false);
-                    },
+                    onEvents: lines => addEvents(lines),
                     onComplete: startTicks => {
-                        scheduleFlush(true);
                         if (startTicks > 0) {
                             // The read began mid-file: the regular track has the earlier lines.
                             fetch(fullTrackUrl).then(response => (response.ok ? response.text() : null)).then(text => {
                                 if (text && renderer && this.#currentAssRenderer === renderer && this.#progressiveTrack === progressive) {
-                                    clearTimeout(flushTimer);
                                     renderer.setTrack(text);
                                     progressive.markWholeTrack();
                                 }
@@ -1592,6 +1598,8 @@ export class HtmlVideoPlayer {
             if (progressive) {
                 options.subContent = EMPTY_ASS_TRACK;
                 delete options.subUrl;
+                // Frames drawn ahead would not show the events added after them.
+                options.renderAhead = 0;
             }
 
             const createRenderer = () => {
@@ -1606,9 +1614,7 @@ export class HtmlVideoPlayer {
                         return;
                     }
                     if (first) {
-                        assHeader = first.header;
-                        assLines.push(...first.lines);
-                        scheduleFlush(true);
+                        setFirstEvents(first.header, first.lines);
                         progressive.attach();
                     } else {
                         // No progressive read here (older server, or it failed): the whole track.

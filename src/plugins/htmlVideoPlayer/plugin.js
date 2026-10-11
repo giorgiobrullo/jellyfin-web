@@ -168,6 +168,9 @@ function normalizeTrackEventText(text, useHtml) {
     return useHtml ? result.replace(/\n/gi, '<br>') : result;
 }
 
+// A valid ASS track with no events, for a renderer set up before its real track arrives.
+const EMPTY_ASS_TRACK = '[Script Info]\nScriptType: v4.00+\n\n[Events]\nFormat: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text\n';
+
 function getTextTrackUrl(track, item, format) {
     if (itemHelper.isLocalItem(item) && track.Path) {
         return track.Path;
@@ -1469,30 +1472,44 @@ export class HtmlVideoPlayer {
                 ((videoElement.currentTime || 0) * 10000000) + (this._currentPlayOptions.transcodingOffsetTicks || 0),
                 this._currentPlayOptions.playerStartPositionTicks || 0);
 
+            // The first events are requested right away and the renderer (worker, fonts) is set up
+            // meanwhile on an empty track, instead of one after the other.
+            const progressiveStart = progressive ? progressive.start(startTicks) : null;
+            const fullTrackUrl = options.subUrl;
+            if (progressive) {
+                options.subContent = EMPTY_ASS_TRACK;
+                delete options.subUrl;
+            }
+
             const createRenderer = () => {
                 if (progressive && this.#progressiveAssTrack !== progressive) {
-                    // The track was changed or playback stopped while the first events loaded.
+                    // The track was changed or playback stopped meanwhile.
                     return;
                 }
-                this.#currentAssRenderer = new SubtitlesOctopus(options);
-                if (progressive && options.subContent) {
-                    progressive.attach(this.#currentAssRenderer);
-                }
+                const renderer = new SubtitlesOctopus(options);
+                this.#currentAssRenderer = renderer;
+                progressiveStart?.then(content => {
+                    if (this.#currentAssRenderer !== renderer || this.#progressiveAssTrack !== progressive) {
+                        return;
+                    }
+                    if (content) {
+                        renderer.setTrack(content);
+                        progressive.attach(renderer);
+                    } else {
+                        // No progressive read here (older server, or it failed): the whole track.
+                        renderer.setTrackByUrl(fullTrackUrl);
+                    }
+                });
             };
 
             Promise.all([
                 apiClient.getNamedConfiguration('encoding'),
                 // Worker in Tizen 5 doesn't resolve relative path with async request
                 resolveUrl(options.workerUrl),
-                resolveUrl(options.legacyWorkerUrl),
-                progressive ? progressive.start(startTicks) : Promise.resolve(null)
-            ]).then(([config, workerUrl, legacyWorkerUrl, progressiveContent]) => {
+                resolveUrl(options.legacyWorkerUrl)
+            ]).then(([config, workerUrl, legacyWorkerUrl]) => {
                 options.workerUrl = workerUrl;
                 options.legacyWorkerUrl = legacyWorkerUrl;
-                if (progressiveContent) {
-                    options.subContent = progressiveContent;
-                    delete options.subUrl;
-                }
 
                 if (config.EnableFallbackFont) {
                     apiClient.getJSON(fallbackFontList).then((fontFiles = []) => {

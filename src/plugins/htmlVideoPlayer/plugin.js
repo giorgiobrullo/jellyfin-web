@@ -44,6 +44,7 @@ import { setBackdropTransparency, TRANSPARENCY_LEVEL } from '../../components/ba
 import Events from '../../utils/events.ts';
 import { includesAny } from '../../utils/container.ts';
 import { isHls } from '../../utils/mediaSource.ts';
+import { canStreamProgressively, ProgressiveAssTrack } from './progressiveAss';
 
 const NATIVE_UNSUPPORTED_SUBTITLE_CODECS = ['ssa', 'ass', 'pgssub', 'dvdsub', 'vobsub'];
 const ASS_SUBTITLE_CODECS = ['ssa', 'ass'];
@@ -273,6 +274,11 @@ export class HtmlVideoPlayer {
      * @type {any | null | undefined}
      */
     #currentAssRenderer;
+
+    /**
+     * @type {ProgressiveAssTrack | null | undefined}
+     */
+    #progressiveAssTrack;
     /**
      * @type {any | null | undefined}
      */
@@ -1310,6 +1316,9 @@ export class HtmlVideoPlayer {
         this.destroyNativeTracks(videoElement, targetTrackIndex);
         this.destroyStoredTrackInfo(targetTrackIndex);
 
+        this.#progressiveAssTrack?.dispose();
+        this.#progressiveAssTrack = null;
+
         const octopus = this.#currentAssRenderer;
         if (octopus) {
             octopus.dispose();
@@ -1442,14 +1451,48 @@ export class HtmlVideoPlayer {
                 renderAhead: 90
             };
 
+            // An embedded track of a remote source would be downloaded whole before the first
+            // line shows: stream it from the playback position instead (see progressiveAss.js).
+            const progressive = canStreamProgressively(track, mediaSource) ?
+                new ProgressiveAssTrack({
+                    apiClient,
+                    itemId: item.Id,
+                    mediaSourceId: mediaSource.Id,
+                    index: track.Index,
+                    fullTrackUrl: options.subUrl,
+                    videoElement,
+                    getPositionTicks: () => ((videoElement.currentTime || 0) * 10000000) + (this._currentPlayOptions.transcodingOffsetTicks || 0)
+                }) : null;
+            this.#progressiveAssTrack?.dispose();
+            this.#progressiveAssTrack = progressive;
+            const startTicks = Math.max(
+                ((videoElement.currentTime || 0) * 10000000) + (this._currentPlayOptions.transcodingOffsetTicks || 0),
+                this._currentPlayOptions.playerStartPositionTicks || 0);
+
+            const createRenderer = () => {
+                if (progressive && this.#progressiveAssTrack !== progressive) {
+                    // The track was changed or playback stopped while the first events loaded.
+                    return;
+                }
+                this.#currentAssRenderer = new SubtitlesOctopus(options);
+                if (progressive && options.subContent) {
+                    progressive.attach(this.#currentAssRenderer);
+                }
+            };
+
             Promise.all([
                 apiClient.getNamedConfiguration('encoding'),
                 // Worker in Tizen 5 doesn't resolve relative path with async request
                 resolveUrl(options.workerUrl),
-                resolveUrl(options.legacyWorkerUrl)
-            ]).then(([config, workerUrl, legacyWorkerUrl]) => {
+                resolveUrl(options.legacyWorkerUrl),
+                progressive ? progressive.start(startTicks) : Promise.resolve(null)
+            ]).then(([config, workerUrl, legacyWorkerUrl, progressiveContent]) => {
                 options.workerUrl = workerUrl;
                 options.legacyWorkerUrl = legacyWorkerUrl;
+                if (progressiveContent) {
+                    options.subContent = progressiveContent;
+                    delete options.subUrl;
+                }
 
                 if (config.EnableFallbackFont) {
                     apiClient.getJSON(fallbackFontList).then((fontFiles = []) => {
@@ -1459,10 +1502,10 @@ export class HtmlVideoPlayer {
                             });
                             availableFonts.push(fontUrl);
                         });
-                        this.#currentAssRenderer = new SubtitlesOctopus(options);
+                        createRenderer();
                     });
                 } else {
-                    this.#currentAssRenderer = new SubtitlesOctopus(options);
+                    createRenderer();
                 }
             });
         });

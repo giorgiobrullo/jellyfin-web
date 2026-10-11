@@ -511,6 +511,13 @@ export default class ConnectionManager {
                 addressesStrings.push(addresses[addresses.length - 1].url);
             }
 
+            // The delays only order the addresses: the first one tried has nothing to wait for (the
+            // web client's single manual address waited 100 ms on every start).
+            const firstTimeout = addresses.length ? addresses[0].timeout : 0;
+            addresses.forEach((address) => {
+                address.timeout -= firstTimeout;
+            });
+
             console.info('[ConnectionManager] tryReconnect addresses', addressesStrings);
 
             return new Promise((resolve, reject) => {

@@ -80,7 +80,8 @@ function shareItemRequests(apiClient: ApiClient) {
     // cached: they share the request in flight.
     const getCurrentUser = apiClient.getCurrentUser.bind(apiClient);
     let currentUserInFlight: ReturnType<typeof getCurrentUser> | null = null;
-    apiClient.getCurrentUser = (enableCache?: boolean) => {
+    let userAnswered = false;
+    const fetchCurrentUser = (enableCache?: boolean) => {
         if (currentUserInFlight) {
             return currentUserInFlight;
         }
@@ -89,11 +90,45 @@ function shareItemRequests(apiClient: ApiClient) {
         const clear = () => {
             if (currentUserInFlight === promise) currentUserInFlight = null;
         };
-        promise.then(clear, clear);
+        promise.then(() => {
+            userAnswered = true;
+            clear();
+        }, clear);
         return promise;
     };
 
+    // Until the server answers, the user saved by the last answer (the apiclient keeps it for
+    // this): the app starts without waiting for /Users/{id}. The apiclient does the same on its
+    // own only while it has made no request at all, and at start-up the page title's request to
+    // /System/Info/Public always comes first. Only until the server first answers: after that, a
+    // missing user (signed out, deleted) is asked for again.
+    apiClient.getCurrentUser = (enableCache?: boolean) => {
+        const fresh = fetchCurrentUser(enableCache);
+        if (!userAnswered && enableCache !== false && !(apiClient as unknown as { _currentUser?: unknown })._currentUser) {
+            const saved = readSavedUser(apiClient);
+            if (saved) {
+                fresh.catch(() => { /* the saved user stands in */ });
+                return Promise.resolve(saved);
+            }
+        }
+        return fresh;
+    };
+
     return apiClient;
+}
+
+function readSavedUser(apiClient: ApiClient) {
+    const userId = apiClient.getCurrentUserId();
+    const serverId = apiClient.serverId();
+    if (!userId || !serverId) {
+        return null;
+    }
+    try {
+        const saved = JSON.parse(localStorage.getItem(`user-${userId}-${serverId}`) || 'null');
+        return saved?.Id === userId ? saved : null;
+    } catch {
+        return null;
+    }
 }
 
 /** Creates a new ApiClient instance with the provided parameters, encoding them as needed. */

@@ -68,6 +68,9 @@ build: ${__JF_BUILD_VERSION__}`);
         document.querySelector('.skinHeader').classList.remove('noHeaderRight');
     });
 
+    // The connection's first requests, now rather than after the start-up below.
+    ServerConnections.warmUp();
+
     // Initialize app host
     await appHost.init();
 

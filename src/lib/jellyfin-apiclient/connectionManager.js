@@ -39,6 +39,24 @@ function normalizeAddress(address) {
     return address;
 }
 
+// The two requests a start-up connection begins with (the server's discovery and the saved
+// sign-in's check), started when the app starts (warmUp) and taken by the connection when it gets
+// to them, ~200 ms later, after the translations, the plugins and the first render.
+const WARM_REQUEST_TTL_MS = 10000;
+const warmRequests = new Map();
+
+function startWarmRequest(key, request) {
+    const promise = ajax(request);
+    promise.catch(() => { /* the connection sees the failure when it takes the request */ });
+    warmRequests.set(key, { at: Date.now(), promise });
+}
+
+function takeWarmRequest(key) {
+    const entry = warmRequests.get(key);
+    warmRequests.delete(key);
+    return entry && Date.now() - entry.at < WARM_REQUEST_TTL_MS ? entry.promise : null;
+}
+
 function sortByAccess(a, b) {
     return (b.DateLastAccessed || 0) - (a.DateLastAccessed || 0);
 }
@@ -212,8 +230,8 @@ export default class ConnectionManager {
             });
         }
 
-        function validateAuthentication(server, serverUrl) {
-            return ajax({
+        function getAuthenticatedSystemInfoRequest(server, serverUrl) {
+            return {
                 type: 'GET',
                 url: `${serverUrl}/System/Info`,
                 dataType: 'json',
@@ -230,7 +248,36 @@ export default class ConnectionManager {
                         server.AccessToken
                     )
                 }
-            }).then(
+            };
+        }
+
+        function getPublicSystemInfoRequest(serverUrl) {
+            return {
+                url: `${serverUrl}/System/Info/Public`,
+                timeout: DEFAULT_CONNECTION_TIMEOUT,
+                type: 'GET',
+                dataType: 'json'
+            };
+        }
+
+        // Starts the requests the connection to the last used server will begin with: see
+        // startWarmRequest.
+        self.warmUp = () => {
+            const server = self.getLastUsedServer();
+            const url = server && getServerAddress(server);
+            if (!url) {
+                return;
+            }
+            startWarmRequest(`${url}/System/Info/Public`, getPublicSystemInfoRequest(url));
+            if (server.AccessToken) {
+                startWarmRequest(`${url}/System/Info ${server.AccessToken}`, getAuthenticatedSystemInfoRequest(server, url));
+            }
+        };
+
+        function validateAuthentication(server, serverUrl) {
+            const request = takeWarmRequest(`${serverUrl}/System/Info ${server.AccessToken}`)
+                || ajax(getAuthenticatedSystemInfoRequest(server, serverUrl));
+            return request.then(
                 (systemInfo) => {
                     updateServerInfo(server, systemInfo);
                     return Promise.resolve();
@@ -440,12 +487,7 @@ export default class ConnectionManager {
         function getTryConnectPromise(url, connectionMode, state, resolve, reject) {
             console.log('getTryConnectPromise ' + url);
 
-            ajax({
-                url: `${url}/System/Info/Public`,
-                timeout: DEFAULT_CONNECTION_TIMEOUT,
-                type: 'GET',
-                dataType: 'json'
-            }).then(
+            (takeWarmRequest(`${url}/System/Info/Public`) || ajax(getPublicSystemInfoRequest(url))).then(
                 (result) => {
                     if (!state.resolved) {
                         state.resolved = true;

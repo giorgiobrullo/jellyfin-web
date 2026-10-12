@@ -370,7 +370,19 @@ function renderTrackSelections(page, instance, item, forceReload, gaveUp) {
     // Not itemHelper.supportsMediaSourceSelection: it turns down an item whose only source is a
     // placeholder, which is just what a title still being fetched has.
     if (item.MediaType === 'Video' && hasPendingVersions(item)) {
-        renderVersionsLoading(page, select, sourceContainer);
+        // Not out yet (an episode airing later): say so at once instead of a loading picker for
+        // the addons' time limit; the versions still show up if some turn up after all.
+        if (isUnreleased(item) && !layoutManager.tv) {
+            page.querySelector('.trackSelections').classList.remove('hide');
+            select.disabled = true;
+            sourceContainer.classList.remove('hide', 'selectSourceLoading');
+            page.querySelector('.selectVideo').innerHTML = '';
+            page.querySelector('.selectAudio').innerHTML = '';
+            page.querySelector('.selectSubtitles').innerHTML = '';
+            renderNoVersions(sourceContainer);
+        } else {
+            renderVersionsLoading(page, select, sourceContainer);
+        }
         waitForVersions(instance, item);
         return;
     }
